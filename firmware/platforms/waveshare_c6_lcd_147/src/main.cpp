@@ -17,9 +17,11 @@
 // Hosts must NOT need DTR tricks — plain writes work once CDC is up.
 static Arduino_DataBus *bus =
     new Arduino_HWSPI(15 /* DC */, 14 /* CS */, 7 /* SCK */, 6 /* MOSI */);
+// rotation 1 = landscape (320 wide x 172 tall). ST7789 offset rules rotate
+// with the MADCTL: landscape needs col offset 0, row offset 34.
 static Arduino_GFX *gfx = new Arduino_ST7789(
-    bus, 21 /* RST */, 0 /* rot */, true /* IPS panel */,
-    172, 320, 34, 0, 34, 0 /* col/row offsets — required, shifts otherwise */);
+    bus, 21 /* RST */, 1 /* rot: landscape */, true /* IPS panel */,
+    320, 172, 0, 34, 0, 34);
 
 #define RSVP_PIN_BTN 9 /* BOOT button */
 // C6 app DRAM ~320KB: 192KB book buffer fits, leaves headroom for CDC+GFX.
@@ -54,9 +56,9 @@ static void draw_frame()
     line[n] = 0;
 
     // ASCII-only banner strings; the classic GLCD font has no em-dash glyph.
-    gfx->setTextBound(0, 0, 172, 320);
+    gfx->setTextBound(0, 0, 320, 172);
     gfx->setTextSize(2);
-    gfx->setCursor(4, (320 - 32) / 2);
+    gfx->setCursor(4, (172 - 32) / 2);
 
     // 3 passes: fg, accent pivot char, fg (rule #6 ORP highlight)
     uint32_t i = 0;
@@ -69,7 +71,7 @@ static void draw_frame()
     for (; i < n; i++) gfx->write(line[i]);
 
     gfx->setTextSize(1);
-    gfx->setCursor(4, 320 - 12);
+    gfx->setCursor(4, 172 - 12);
     gfx->setTextColor(t.guide.rgb565);
     gfx->printf("%u wpm  %s", rsvp_wpm(&r), RSVP_THEMES[theme_idx].name);
 }
