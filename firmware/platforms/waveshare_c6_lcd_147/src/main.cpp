@@ -17,11 +17,13 @@
 // Hosts must NOT need DTR tricks — plain writes work once CDC is up.
 static Arduino_DataBus *bus =
     new Arduino_HWSPI(15 /* DC */, 14 /* CS */, 7 /* SCK */, 6 /* MOSI */);
-// rotation 1 = landscape (320 wide x 172 tall). ST7789 offset rules rotate
-// with the MADCTL: landscape needs col offset 0, row offset 34.
+// Build in PORTRAIT (rot 0) with the offsets we verified on this panel
+// (col 34, row 0) — portrait mode was confirmed working. Then rotate to
+// landscape in setup() via setRotation(1). Pre-swapping dims/offsets in the
+// constructor produced partial-glass noise.
 static Arduino_GFX *gfx = new Arduino_ST7789(
-    bus, 21 /* RST */, 1 /* rot: landscape */, true /* IPS panel */,
-    320, 172, 0, 34, 0, 34);
+    bus, 21 /* RST */, 0 /* rot: portrait */, true /* IPS panel */,
+    172, 320, 34, 0, 34, 0);
 
 #define RSVP_PIN_BTN 9 /* BOOT button */
 // C6 app DRAM ~320KB: 192KB book buffer fits, leaves headroom for CDC+GFX.
@@ -124,6 +126,7 @@ void setup()
     Serial.begin(RSVP_SERIAL_BAUD);
     pinMode(RSVP_PIN_BTN, INPUT_PULLUP);
     gfx->begin();
+    gfx->setRotation(1); /* landscape */
     pinMode(22, OUTPUT); /* BL */
     digitalWrite(22, HIGH);
     apply_theme();
