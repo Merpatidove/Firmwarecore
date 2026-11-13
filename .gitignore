@@ -1,0 +1,15 @@
+# build junk
+.pio/
+build*.log
+
+# tooling state
+.agents/
+.playwright-cli/
+pw-config.json
+ghauth.log
+
+# research scratch (large generated graph)
+graphify-out/
+
+# platformio board yml experiments
+*.yml

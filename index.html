@@ -1,0 +1,1124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Text-scroller — fixed-point RSVP reader</title>
+<style>
+  :root {
+    --bg: #08090c; --fg: #e9e4dc; --dim: #63666f;
+    --word: #ffb347; --guide: #2a2e36; --panel: rgba(14, 15, 20, .78);
+    --hair: rgba(255,255,255,.07); --ghost: rgba(255,255,255,.04);
+    --read-font: 'Cascadia Mono', Consolas, 'Courier New', monospace; --read-size: 32pt;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.4 system-ui, 'Segoe UI', sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  /* atmosphere: vignette + grain over everything, never intercepts input */
+  body::after {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 40;
+    background:
+      radial-gradient(ellipse 120% 90% at 50% 45%, transparent 55%, rgba(0,0,0,.55) 100%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)' opacity='.05'/%3E%3C/svg%3E");
+  }
+
+  /* ---------- idle chrome: everything fades unless you ask for it ---------- */
+  #hud, #tune {
+    transition: opacity .45s ease, transform .45s ease;
+  }
+  body:not(.awake):not(.menu-open) #hud {
+    opacity: 0; transform: translateY(8px); pointer-events: none;
+  }
+  body:not(.awake):not(.menu-open) { cursor: none; }
+
+  main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  /* ---------- the reader ---------- */
+  #stage {
+    flex: 1; position: relative; display: grid; place-items: center;
+    overflow: hidden; padding: 0 4vw; cursor: default;
+  }
+  /* soft spotlight where the words live */
+  #stage::before {
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: min(1100px, 92vw); height: 40vh; transform: translate(-50%, -50%);
+    background: radial-gradient(ellipse, rgba(255,179,71,.045), transparent 65%);
+    pointer-events: none;
+  }
+  #line {
+    display: flex; justify-content: center; align-items: baseline;
+    font-family: var(--read-font);
+    font-size: var(--read-size); line-height: 1.25;
+    white-space: pre; letter-spacing: .01em; user-select: none;
+  }
+  #line[hidden] { display: none; }   /* author #line{display:flex} beats the UA [hidden] rule */
+  #line .l, #line .r { display: inline-block; white-space: pre; color: var(--fg); }
+  #line .p { color: var(--fg); font-weight: 700; }
+  #line.cur .l, #line.cur .r, #line.cur .p { color: var(--word); }
+  #line.cur .p { text-shadow: 0 0 24px rgba(255,179,71,.35); } /* ORP emphasis */
+  #ticker { position: absolute; inset: 0; overflow: hidden; }
+  #track {
+    position: absolute; top: 50%; left: 0; white-space: pre;
+    font-family: var(--read-font); font-size: var(--read-size); line-height: 1.25;
+    user-select: none; will-change: transform;
+  }
+  #track .tw { color: var(--fg); }
+  #track .tw.cur { color: var(--word); text-shadow: 0 0 24px rgba(255,179,71,.35); }
+  #guide {
+    position: absolute; top: 0; bottom: 0; left: 50%; width: 1px;
+    background: linear-gradient(transparent, var(--guide) 20%, var(--guide) 80%, transparent);
+    pointer-events: none;
+  }
+  #msg {
+    position: absolute; max-width: 46ch; text-align: center; color: var(--dim);
+    font-size: 15px; line-height: 1.7; letter-spacing: .01em;
+  }
+  #msg .k { color: #8a8d96; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; display: block; margin-top: 14px; }
+  #msg.error { color: #ff7a6e; }
+  #stage.empty #msg {
+    max-width: min(420px, 78vw); padding: 24px 28px; cursor: pointer;
+    border: 1px dashed var(--hair); border-radius: 14px; background: var(--ghost);
+    color: #b9bcc4;
+  }
+
+  /* ---------- HUD ---------- */
+  #dock {
+    position: fixed; left: 12px; right: 12px; bottom: 12px;   /* pre-JS fallback only — JS owns left/top/width */
+    display: flex; flex-direction: column; z-index: 30;
+  }
+  #dock.floating { max-width: calc(100vw - 24px); }   /* state flag only: never re-anchor with `bottom` */
+  #grip {
+    cursor: grab; color: #8a8d96; font-size: 13px; letter-spacing: 2px;
+    padding: 0 2px; line-height: 1; user-select: none; touch-action: none;
+  }
+  #grip:hover { color: var(--fg); }
+  #grip:active { cursor: grabbing; }
+  #hud {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--hair); border-radius: 12px;
+    box-shadow: 0 12px 34px rgba(0,0,0,.45); z-index: 20;
+    touch-action: none;
+  }
+  #hud button, #hud input, #hud select, #hud label, #hud details, #hud textarea, #hud summary { touch-action: auto; }
+  button {
+    background: transparent; color: var(--fg); border: 1px solid transparent;
+    border-radius: 7px; padding: 5px 10px; cursor: pointer; font-size: 13px;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  button:hover { background: var(--ghost); border-color: var(--hair); }
+  #play { font-size: 15px; width: 36px; height: 32px; padding: 0; color: var(--word); }
+  #seek { flex: 1; min-width: 100px; }
+  #pos, output { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
+  #pos { min-width: 72px; }
+  #sec {
+    max-width: 14ch; min-width: 0; font-size: 12px; color: var(--fg);
+    background: transparent; border: 1px solid var(--hair);
+    border-radius: 7px; padding: 4px 6px; text-overflow: ellipsis;
+  }
+  #sec:hover { border-color: var(--word); }
+  input[type=range] {
+    accent-color: var(--word); height: 18px; background: transparent; cursor: pointer;
+  }
+  #skim { color: #ff7a6e; font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+  .presets { display: inline-flex; gap: 4px; }
+  .presets button {
+    padding: 3px 9px; font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--dim); border-color: var(--hair);
+  }
+  .presets button:hover { color: var(--fg); }
+  .presets button.on { color: var(--word); border-color: rgba(255,179,71,.45); }
+  .pace-cluster { display: inline-flex; align-items: center; gap: 8px; }
+  .pace-cluster .sub { color: #4c4f57; }
+  #hud.ticker-mode .chunk-ctl { display: none; }
+  #tuneBtn { color: var(--dim); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+  #tuneBtn.on { color: var(--word); }
+  #meta {
+    color: var(--dim); font-size: 11px; letter-spacing: .06em;
+    max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ---------- mode: visible segmented control, not buried ---------- */
+  .seg { display: inline-flex; border: 1px solid var(--hair); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    border: 0; border-radius: 0; padding: 5px 13px; color: var(--dim);
+    font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .seg button:hover { background: var(--ghost); }
+  .seg button.on { background: rgba(255,179,71,.14); color: var(--word); }
+
+  /* ---------- tune panel (rare knobs): in-flow above the HUD ---------- */
+  #tune {
+    position: absolute; left: 0; right: 0; bottom: 100%;   /* lives IN #dock: opens upward, above the bar */
+    display: none; gap: 8px 14px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; background: rgba(10, 11, 15, .92);
+    border: 1px solid var(--hair); border-bottom: 0; border-radius: 12px 12px 0 0;
+    color: var(--dim); font-size: 12px;
+    max-height: 60vh; overflow: auto;
+  }
+  #tune.open { display: flex; }
+  #tune.down {                    /* no room above → drop below the bar */
+    bottom: auto; top: 100%;
+    border: 1px solid var(--hair); border-top: 0; border-radius: 0 0 12px 12px;
+  }
+  #tune label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #tune input[type=color] {
+    width: 30px; height: 30px; padding: 0;
+    border: 1.5px solid rgba(255,255,255,.35); border-radius: 6px;
+    background: none; cursor: pointer;
+    transition: border-color .15s, transform .15s;
+  }
+  #tune input[type=color]:hover { border-color: #ffb347; transform: scale(1.08); }
+  #tune input[type=color]:focus-visible { outline: 2px solid #ffb347; outline-offset: 2px; }
+  #tune input[type=color]::-webkit-color-swatch-wrapper { padding: 0; }
+  #tune input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+  #tune input[type=color]::-moz-color-swatch { border: 0; border-radius: 4px; }
+  #tune .hex {
+    width: 64px; padding: 3px 4px; font: 11px ui-monospace, 'Cascadia Mono', monospace;
+    color: var(--fg); background: transparent; letter-spacing: .06em;
+    text-transform: uppercase; border: 1px solid transparent; border-radius: 5px;
+  }
+  #tune .hex:hover { border-color: var(--hair); }
+  #tune .hex:focus { border-color: var(--word); outline: none; }
+  #tune .chips { flex-basis: 100%; display: flex; align-items: center; gap: 7px; }
+  #tune .chips .ct { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #6e727b; }
+  #tune .chips button {
+    width: 18px; height: 18px; padding: 0; border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,.35); background: var(--c);
+    cursor: pointer; transition: transform .15s, box-shadow .15s;
+  }
+  #tune .chips button:hover { transform: scale(1.15); }
+  #tune .chips button:focus-visible { outline: 2px solid var(--word); outline-offset: 2px; }
+  #tune .chips button.on { box-shadow: 0 0 0 2px #0a0b0f, 0 0 0 3.5px var(--word); }
+  #tune select, #tune input[type=number] {
+    background: var(--ghost); color: var(--fg); border: 1px solid var(--hair);
+    border-radius: 6px; padding: 3px 6px; font-size: 12px; font-family: inherit;
+  }
+  #tune input[type=number] { width: 52px; }
+  select option { background: #14161a; color: #e8e8e8; }
+  #tune .group {
+    flex-basis: 100%; font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: #6e727b;
+  }
+  #tune details { flex-basis: 100%; }
+  #tune summary { cursor: pointer; color: var(--dim); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+  #tune textarea {
+    width: 100%; height: 84px; margin: 8px 0; resize: vertical;
+    background: transparent; color: var(--fg); border: 1px solid var(--hair);
+    border-radius: 8px; padding: 8px; font-family: ui-monospace, monospace; font-size: 12px;
+  }
+  .keys { flex-basis: 100%; font-size: 11px; color: #969aa3; letter-spacing: .04em; }
+  kbd {
+    background: var(--ghost); border: 1px solid var(--hair); border-radius: 4px;
+    padding: 0 4px; font-family: inherit; font-size: 10px; color: var(--fg);
+  }
+
+  /* ---------- progress hairline: ambient, never fades ---------- */
+  #prog { position: fixed; left: 0; right: 0; bottom: 0; height: 2px; z-index: 50; pointer-events: none; }
+  #prog i { display: block; height: 100%; width: 0; background: var(--word); opacity: .5; transition: width .15s linear; }
+</style>
+</head>
+<body>
+
+<main>
+  <div id="stage" class="empty">
+    <div id="guide"></div>
+    <div id="line" hidden><span class="l"></span><span class="p"></span><span class="r"></span></div>
+    <div id="ticker" hidden><div id="track"></div></div>
+    <div id="msg">Drop a PDF, DOCX, EPUB, MD or TXT into this box — or click it.<br>Everything stays on this machine.<span class="k">space play · ↑↓ speed · ←→ jump · R restart · F fullscreen</span></div>
+  </div>
+</main>
+
+<div id="dock">
+  <div id="tune">
+    <span class="group">Timing</span>
+    <label>ticker speed <input type="range" id="pace" min="20" max="200" step="5" value="60" style="width:90px" title="the ticker's speed trim: a % of the equivalent wpm — scrolling reads blurrier than RSVP at the same wpm"></label>
+    <output id="pacev">60%</output>
+    <span class="group">Appearance</span>
+    <label>font
+      <select id="font">
+        <option value="'Cascadia Mono', Consolas, 'Courier New', monospace" selected>Cascadia Mono</option>
+        <option value="Consolas, monospace">Consolas</option>
+        <option value="'Cascadia Code', Consolas, monospace">Cascadia Code</option>
+        <option value="Menlo, Consolas, monospace">Menlo</option>
+        <option value="'Courier New', Courier, monospace">Courier New</option>
+        <option value="ui-monospace, monospace">System mono</option>
+      </select>
+    </label>
+    <label>size <input type="number" id="fsize" min="6" max="72" step="1" value="32"> pt</label>
+    <label>word <input type="color" id="wcol" value="#ffb347"><input class="hex" id="whex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="word colour, hex"></label>
+    <span class="chips" id="wchips" title="accent presets — the word swatch opens the full picker"><span class="ct">presets</span><button type="button" data-c="#ffb347" style="--c:#ffb347" title="amber"></button><button type="button" data-c="#ffffff" style="--c:#ffffff" title="white"></button><button type="button" data-c="#7ee787" style="--c:#7ee787" title="green"></button><button type="button" data-c="#ff7a6e" style="--c:#ff7a6e" title="red"></button><button type="button" data-c="#79c0ff" style="--c:#79c0ff" title="blue"></button></span>
+    <label>background <input type="color" id="bgcol" value="#08090c"><input class="hex" id="bhex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="background colour, hex"></label>
+    <label>guide <input type="color" id="gcol" value="#2a2e36"><input class="hex" id="ghex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="guide colour, hex"></label>
+    <span class="group">Bar</span>
+    <button id="resetDock" type="button">Reset bar position</button>
+    <details>
+      <summary>Paste text</summary>
+      <textarea id="ta" placeholder="Paste any text here, then Load."></textarea>
+      <button id="load">Load</button>
+    </details>
+    <span class="keys"><kbd>space</kbd> play · <kbd>↑↓</kbd> speed · <kbd>←→</kbd> jump · <kbd>R</kbd> restart · <kbd>F</kbd> fullscreen · <kbd>O</kbd> open · <kbd>Esc</kbd> close</span>
+  </div>
+
+  <div id="hud">
+    <span id="grip" title="Drag to move · double-click to reset">⋮⋮</span>
+    <button id="tuneBtn" title="Options">Options</button>
+    <button id="open" title="Open file (O)">open</button>
+    <input type="file" id="file" hidden multiple
+           accept=".txt,.md,.markdown,.text,.html,.htm,.docx,.pdf,.epub,.csv,.json,.log,.rtf">
+    <button id="play" title="Space">▶</button>
+    <input type="range" id="seek" min="0" max="0" value="0">
+    <span id="pos">0 / 0</span>
+    <select id="sec" hidden title="jump to a section"></select>
+    <button id="restart" title="R">↺</button>
+    <span class="seg" id="segMode" title="Display mode">
+      <button data-mode="block">Block</button>
+      <button data-mode="ticker">Ticker</button>
+    </span>
+    <select id="mode" hidden>
+      <option value="block" selected>Block (RSVP)</option>
+      <option value="ticker">Ticker (scroll)</option>
+    </select>
+    <span class="pace-cluster">
+      <label style="display:inline-flex;align-items:center;gap:6px;color:var(--dim)">wpm
+        <input type="range" id="wpm" min="60" max="1500" step="10" value="300" style="width:110px">
+      </label>
+      <output id="wpmv">300</output>
+      <span id="skim" hidden>skimming</span>
+      <label class="sub chunk-ctl">chunk
+        <input type="range" id="chunk" min="1" max="7" step="1" value="3" style="width:90px">
+      </label>
+      <output id="chunkv" class="chunk-ctl">3</output>
+      <span class="presets" id="presets" title="starting points, tune freely">
+        <button data-p="200,3">Study</button>
+        <button data-p="300,3">Balanced</button>
+        <button data-p="600,1" title="skimming speed (~600 wpm, comprehension drops)">Blast</button>
+      </span>
+    </span>
+    <span id="meta"></span>
+    <button id="fs" title="F">⛶</button>
+  </div>
+</div>
+
+<div id="prog"><i></i></div>
+
+<script src="rsvp-core.js"></script>
+<script>
+/* PDF engine: one CDN dependency, only needed for .pdf. Offline still does
+   txt/md/html/docx. ponytail: swap for a bundled copy if offline PDFs matter. */
+(function () {
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+  s.onload = function () {
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  };
+  s.onerror = function () { window.__pdfFailed = true; };
+  document.head.appendChild(s);
+})();
+
+var $ = function (id) { return document.getElementById(id); };
+var state = { chunks: [], i: 0, playing: false, wpm: 300, size: 3, src: '', mode: 'block', pace: 60, marks: [] };
+var timer = null;
+
+/* ---------- idle chrome ---------- */
+var idleT = null, held = false;
+function wake() {
+  document.body.classList.add('awake');
+  clearTimeout(idleT);
+  idleT = setTimeout(function () {
+    if (held) { wake(); return; }   // never hide mid-drag: a held slider keeps chrome up
+    document.body.classList.remove('awake');
+  }, 2500);
+}
+['pointermove', 'pointerdown', 'keydown', 'wheel'].forEach(function (ev) {
+  window.addEventListener(ev, wake, { passive: true });
+});
+window.addEventListener('pointerdown', function () { held = true; }, { passive: true });
+['pointerup', 'pointercancel'].forEach(function (ev) {
+  window.addEventListener(ev, function () { held = false; wake(); });
+});
+window.addEventListener('blur', function () { held = false; });
+
+/* ---------- extraction (all local) ---------- */
+
+var enc = new TextDecoder('utf-8');
+function decodeEntities(t) {
+  var el = document.createElement('textarea');
+  el.innerHTML = t;
+  return el.value;
+}
+function htmlToText(t) {
+  return decodeEntities(t
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')   // <title> is not body text ("Ambani & Sons" cover)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, '\n\u00A7 $2\n')
+    .replace(/<\/?(p|div|br|li|h[1-6]|tr|td|th)[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ''));   // tags split words (drop caps: <span>B</span>EING), so no space
+}
+function mdToText(t) {
+  return t
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+(.+)$/gm, '\n\u00A7 $1\n')
+    .replace(/^\s{0,3}>\s?/gm, '')
+    .replace(/^\s{0,3}[-*+]\s+/gm, '')
+    .replace(/[*_~]{1,3}/g, '');
+}
+function xmlToText(xml) {
+  return decodeEntities(xml
+    .replace(/<w:tab\/>/g, '\t')
+    .replace(/<w:pStyle[^>]*w:val="[Hh]eading ?[1-6]"[^>]*\/>/g, '\u00A7 ')
+    .replace(/<\/w:p>/g, '\n')
+    .replace(/<[^>]+>/g, ''));
+}
+// Minimal zip reader: pull one entry by name (DOCX is a zip).
+async function unzipEntry(buf, name) {
+  var dv = new DataView(buf);
+  var eocd = -1;
+  for (var i = buf.byteLength - 22; i >= 0 && i >= buf.byteLength - 22 - 65535; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('not a zip archive');
+  var n = dv.getUint16(eocd + 10, true), p = dv.getUint32(eocd + 16, true);
+  for (var k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    var method = dv.getUint16(p + 10, true);
+    var compSize = dv.getUint32(p + 20, true);
+    var nameLen = dv.getUint16(p + 28, true);
+    var extraLen = dv.getUint16(p + 30, true);
+    var cmtLen = dv.getUint16(p + 32, true);
+    var localOff = dv.getUint32(p + 42, true);
+    if (enc.decode(new Uint8Array(buf, p + 46, nameLen)) === name) {
+      var lname = dv.getUint16(localOff + 26, true);
+      var lextra = dv.getUint16(localOff + 28, true);
+      var start = localOff + 30 + lname + lextra;
+      var data = new Uint8Array(buf, start, compSize);
+      if (method === 0) return enc.decode(data);
+      var stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      return new Response(stream).text();
+    }
+    p += 46 + nameLen + extraLen + cmtLen;
+  }
+  throw new Error('entry not found: ' + name);
+}
+async function docxToText(buf) {
+  return xmlToText(await unzipEntry(buf, 'word/document.xml'));
+}
+function zipCentral(buf) {
+  var dv = new DataView(buf), eocd = -1;
+  for (var i = buf.byteLength - 22; i >= 0 && i >= buf.byteLength - 22 - 65535; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('not a zip archive');
+  var n = dv.getUint16(eocd + 10, true), p = dv.getUint32(eocd + 16, true), out = [];
+  for (var k = 0; k < n; k++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    out.push({
+      name: enc.decode(new Uint8Array(buf, p + 46, dv.getUint16(p + 28, true))),
+      method: dv.getUint16(p + 10, true),
+      compSize: dv.getUint32(p + 20, true),
+      localOff: dv.getUint32(p + 42, true)
+    });
+    p += 46 + dv.getUint16(p + 28, true) + dv.getUint16(p + 30, true) + dv.getUint16(p + 32, true);
+  }
+  return out;
+}
+async function zipRead(buf, e) {
+  var dv = new DataView(buf);
+  var start = e.localOff + 30 + dv.getUint16(e.localOff + 26, true) + dv.getUint16(e.localOff + 28, true);
+  var data = new Uint8Array(buf, start, e.compSize);
+  if (e.method === 0) return enc.decode(data);
+  if (e.method !== 8) throw new Error('Unsupported compression in EPUB: ' + e.method);
+  var lastErr;
+  for (var f = 0; f < 3; f++) {   // deflate-raw is the ZIP one; the other two are fallbacks
+    try {
+      if (typeof DecompressionStream === 'undefined') throw new Error('DecompressionStream not available');
+      var fmt = ['deflate-raw', 'raw', 'deflate'][f];
+      var stream = new Blob([data]).stream().pipeThrough(new DecompressionStream(fmt));
+      return await new Response(stream).text();
+    } catch (err) { lastErr = err; }
+  }
+  throw lastErr;
+}
+function xmlAttr(tag, name) {
+  var m = tag.match(new RegExp(name + '\\s*=\\s*"([^"]*)"'));
+  return m ? m[1] : '';
+}
+function resolveHref(base, href) {
+  var parts = base.split('/'); parts.pop();
+  href.split('#')[0].split('/').forEach(function (seg) {
+    if (seg === '..') parts.pop();
+    else if (seg && seg !== '.') parts.push(seg);
+  });
+  return parts.join('/');
+}
+// Reading order lives in the OPF spine, not the filename — alphabetical puts
+// conclusion.html first. Returns null when the book declares no usable spine.
+async function epubOrder(buf, entries, byName) {
+  if (!byName['META-INF/container.xml']) return null;
+  var rootTag = (await zipRead(buf, byName['META-INF/container.xml'])).match(/<rootfile\b[^>]*>/i) || '';
+  var root = xmlAttr(rootTag[0] || '', 'full-path');
+  if (!root || !byName[root]) return null;
+  var opf = await zipRead(buf, byName[root]);
+  var manifest = {}, m, re = /<item\b[^>]*>/gi;
+  while ((m = re.exec(opf))) {
+    var id = xmlAttr(m[0], 'id'), href = xmlAttr(m[0], 'href');
+    if (id && href) manifest[id] = resolveHref(root, href);
+  }
+  var order = [], sre = /<itemref\b[^>]*>/gi;
+  while ((m = sre.exec(opf))) {
+    var ref = manifest[xmlAttr(m[0], 'idref')];
+    if (ref && byName[ref]) order.push(ref);
+  }
+  return order.length ? order : null;
+}
+async function epubToText(buf) {
+  var entries = zipCentral(buf), byName = {}, i;
+  for (i = 0; i < entries.length; i++) byName[entries[i].name] = entries[i];
+  var names = await epubOrder(buf, entries, byName);
+  if (!names) {   // no usable OPF: name order, skipping nav pages
+    names = entries.filter(function (e) {
+      var nn = e.name.toLowerCase();
+      return /\.x?html?$/.test(nn) && nn.indexOf('nav') === -1 && nn.indexOf('toc') === -1;
+    }).map(function (e) { return e.name; }).sort();
+  }
+  if (names.length === 0) throw new Error('No HTML content found in EPUB');
+  var out = [];
+  for (i = 0; i < names.length; i++) {
+    var e = byName[names[i]];
+    if (e) out.push(htmlToText(await zipRead(buf, e)));
+  }
+  return out.join('\n\n');
+}
+
+async function pdfToText(buf) {
+  if (!window.pdfjsLib) {
+    throw new Error(window.__pdfFailed
+      ? 'PDF engine unavailable (no internet). txt/md/html/docx still work.'
+      : 'PDF engine still loading — try again in a second.');
+  }
+  var doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+  var out = [];
+  for (var i = 1; i <= doc.numPages; i++) {
+    out.push('\u00A7');   // page break: the one structure a PDF always declares
+    var tc = await (await doc.getPage(i)).getTextContent();
+    var line = '', lastY = null;
+    tc.items.forEach(function (it) {
+      if (it.str === undefined) return;
+      // ponytail: Y-delta line break heuristic; good for prose, rough on tables.
+      if (lastY !== null && Math.abs(it.transform[5] - lastY) > 2) { out.push(line); line = ''; }
+      line += it.str + ' ';
+      lastY = it.transform[5];
+    });
+    out.push(line);
+  }
+  return out.join('\n');
+}
+async function extract(file) {
+  var name = file.name.toLowerCase();
+  var ext = name.slice(name.lastIndexOf('.'));
+  var head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
+  var sniff = String.fromCharCode.apply(null, head);
+  if (ext === '.epub') return epubToText(await file.arrayBuffer());
+  if (ext === '.docx' || (sniff === 'PK\x03\x04' && ext === '.docx')) return docxToText(await file.arrayBuffer());
+  if (sniff === 'PK\x03\x04' && ext !== '.epub') return docxToText(await file.arrayBuffer());
+  if (ext === '.pdf' || sniff === '%PDF') return pdfToText(await file.arrayBuffer());
+  var t = await file.text();
+  if (ext === '.md' || ext === '.markdown') return mdToText(t);
+  if (ext === '.html' || ext === '.htm') return htmlToText(t);
+  return t;
+}
+
+/* ---------- reader ---------- */
+
+var DEF_WORD = '#ffb347';
+var DEF_BG = '#08090c';
+var DEF_GUIDE = '#2a2e36';
+var DEF_FONT = "'Cascadia Mono', Consolas, 'Courier New', monospace";
+var DEF_SIZE = 32;
+function applyStyle(c, f, z, b, g) {
+  document.documentElement.style.setProperty('--word', c);
+  document.documentElement.style.setProperty('--read-font', f);
+  document.documentElement.style.setProperty('--read-size', z + 'pt');
+  document.documentElement.style.setProperty('--bg', b);
+  document.documentElement.style.setProperty('--guide', g);
+  $('wcol').value = c; $('font').value = f; $('fsize').value = z;
+  $('bgcol').value = b; $('gcol').value = g;
+}
+function save() {
+  try {
+    localStorage.setItem('rsvp.v1', JSON.stringify({
+      wpm: state.wpm, size: state.size, i: state.i, src: state.src, mode: state.mode,
+      pace: state.pace,
+      marks: state.marks,
+      color: $('wcol').value, font: $('font').value, fsize: +$('fsize').value,
+      bg: $('bgcol').value, guide: $('gcol').value,
+      chunks: state.chunks.length < 60000 ? state.chunks : null
+    }));
+  } catch (e) { /* quota / private mode — fine, just don't resume */ }
+}
+function load() {
+  try {
+    var s = JSON.parse(localStorage.getItem('rsvp.v1') || 'null');
+    if (!s) return;
+    state.wpm = s.wpm || 300;
+    state.size = s.size || 3;
+    state.mode = s.mode || 'block';
+    state.pace = s.pace || 60;
+    $('mode').value = state.mode;
+    $('pace').value = state.pace; $('pacev').value = state.pace + '%';
+    $('wpm').value = state.wpm; $('wpmv').value = state.wpm;
+    $('chunk').value = state.size; $('chunkv').value = state.size;
+    applyStyle(s.color || DEF_WORD, s.font || DEF_FONT, s.fsize || DEF_SIZE,
+               s.bg || DEF_BG, s.guide || DEF_GUIDE);
+    state.marks = s.marks || [];
+    if (s.chunks && s.chunks.length) {
+      state.chunks = s.chunks;
+      state.i = Math.min(s.i || 0, s.chunks.length - 1);
+      state.src = s.src || '';
+      ready(false);
+    }
+  } catch (e) {}
+}
+function paintProgress() {
+  var n = state.chunks.length;
+  $('prog').firstElementChild.style.width = (n ? (state.i + 1) / n * 100 : 0) + '%';
+  syncSec();
+}
+function mapSecs() {            // word offsets -> chunk indices; rerun on every re-chunk
+  var marks = state.marks || [], ch = state.chunks, starts = [], secs = [];
+  var acc = 0, j = 0, i;
+  for (i = 0; i < ch.length; i++) { starts.push(acc); acc += ch[i].split(' ').length; }
+  for (i = 0; i < marks.length; i++) {
+    while (j + 1 < starts.length && starts[j + 1] <= marks[i].w) j++;
+    if (!secs.length || secs[secs.length - 1].i !== j) secs.push({ t: marks[i].t, i: j });
+  }
+  state.secs = secs;
+  var sel = $('sec');
+  sel.textContent = '';
+  for (i = 0; i < secs.length; i++) {
+    var o = document.createElement('option');
+    o.value = i; o.textContent = secs[i].t;
+    sel.appendChild(o);
+  }
+  sel.hidden = secs.length < 2;   // no sections found -> no control at all (rule #15)
+  syncSec();
+}
+function syncSec() {            // keep the list pointing at where the reader is
+  var secs = state.secs || [];
+  if (secs.length < 2) return;
+  var cur = 0;
+  for (var i = 0; i < secs.length; i++) if (secs[i].i <= state.i) cur = i;
+  $('sec').value = cur;
+}
+function render() {
+  if (state.mode !== 'block') return;   // mode guard: only the active renderer draws
+  var c = state.chunks[state.i] || '';
+  var sp = RSVP.split(c);
+  var L = sp.left.length, R = sp.right.length, d = Math.abs(L - R);
+  var l = $('line').children[0], pv = $('line').children[1], r = $('line').children[2];
+  l.textContent = sp.left; pv.textContent = sp.pivot; r.textContent = sp.right;
+  pv.className = 'p';
+  $('line').className = 'cur';      // block mode: whole group coloured
+  l.style.paddingLeft = (R > L ? d : 0) + 'ch';
+  r.style.paddingRight = (L > R ? d : 0) + 'ch';
+  $('seek').value = state.i;
+  $('pos').textContent = (state.i + 1) + ' / ' + state.chunks.length;
+  paintProgress();
+}
+
+/* ---------- ticker mode: smooth horizontal scroll ---------- */
+// w0/base/spans hold only a sliding window of words: a whole book on one line
+// is tens of millions of px wide and stalls Chromium's paint for minutes.
+var T = { words: [], starts: [], spans: [], w0: 0, base: 0, total: 0, pos: 0, cps: 0, ch: 0, gate: 0, raf: null, last: 0, cur: null };
+var TWIN = 4000;   // words kept in the DOM at once (~3800 words between rebuilds)
+
+function tickerCps() {   // chars/sec at the gate, incl. ticker pace trim
+  return T.words.length ? (state.wpm / 60) * (T.total / T.words.length) * (state.pace / 100) : 0;
+}
+
+function chWidth() {
+  var s = document.createElement('span');
+  s.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font-family:var(--read-font);font-size:var(--read-size)';
+  s.textContent = '0000000000';
+  document.body.appendChild(s);
+  var w = s.getBoundingClientRect().width / 10;
+  s.parentNode.removeChild(s);
+  return w || 8;
+}
+function buildTicker() {
+  T.words = state.chunks.join(' ').split(/\s+/).filter(Boolean);
+  T.starts = []; T.cur = null; T.total = 0;
+  for (var i = 0; i < T.words.length; i++) {
+    T.starts.push(T.total);
+    T.total += T.words[i].length + 1;   // +1 for the space that keeps char math exact
+  }
+  T.ch = chWidth();
+  T.gate = $('ticker').clientWidth / 2;
+  T.cps = tickerCps();   // words/min -> chars/s via real avg word length, x pace
+  tickerWindow(wordAt(Math.floor(T.pos)));
+}
+function tickerWindow(k) {   // render the spans around word k; the line is virtual
+  var track = $('track');
+  if (!T.words.length) { track.textContent = ''; T.spans = []; return; }
+  T.w0 = Math.max(0, k - 200);            // 200 words of context scroll past the gate
+  T.base = T.starts[T.w0] || 0;
+  T.cur = null;
+  var end = Math.min(T.words.length, T.w0 + TWIN);
+  var frag = document.createDocumentFragment();
+  T.spans = [];
+  for (var i = T.w0; i < end; i++) {
+    var sp = document.createElement('span');
+    sp.className = 'tw';
+    sp.textContent = T.words[i] + ' ';
+    frag.appendChild(sp);
+    T.spans.push(sp);
+  }
+  track.textContent = '';
+  track.appendChild(frag);
+}
+function syncTickerSpeed() {   // live wpm/pace changes; callers assume it exists
+  T.cps = tickerCps();
+}
+function wordAt(charPos) {
+  var lo = 0, hi = T.starts.length - 1;
+  while (lo < hi) { var mid = (lo + hi + 1) >> 1; if (T.starts[mid] <= charPos) lo = mid; else hi = mid - 1; }
+  return T.words.length ? lo : -1;
+}
+function paintTicker() {
+  if (state.mode !== 'ticker') return;   // mode guard: only the active renderer draws
+  if (!T.words.length) return;
+  var k = wordAt(Math.floor(T.pos));
+  if (k < T.w0 || k >= T.w0 + T.spans.length) tickerWindow(k);   // scrolled out of the window
+  $('track').style.transform = 'translate(' + (T.gate - (T.pos - T.base) * T.ch) + 'px, -50%)';
+  if (k !== T.cur) {
+    if (T.cur != null && T.spans[T.cur - T.w0]) T.spans[T.cur - T.w0].classList.remove('cur');
+    if (k >= 0 && T.spans[k - T.w0]) T.spans[k - T.w0].classList.add('cur');
+    T.cur = k;
+  }
+  var ci = Math.min(state.chunks.length - 1, Math.floor(Math.max(0, k) / state.size));
+  state.i = ci;
+  $('seek').value = ci;
+  $('pos').textContent = (ci + 1) + ' / ' + state.chunks.length;
+  paintProgress();
+}
+function tickTicker(ts) {
+  if (state.mode !== 'ticker') return;   // mode guard: a stale rAF must not paint after a switch
+  if (!state.playing) return;
+  if (!T.last) T.last = ts;
+  T.pos += T.cps * (ts - T.last) / 1000;
+  T.last = ts;
+  if (T.pos >= T.total) { T.pos = T.total; paintTicker(); pause(); return; }
+  paintTicker();
+  T.raf = requestAnimationFrame(tickTicker);
+}
+function seekTicker(chunkIndex) {         // map a chunk index to a char position
+  if (!T.words.length) return;
+  var w = Math.min(chunkIndex * state.size, T.words.length - 1);
+  T.pos = T.starts[w] || 0;
+  paintTicker();
+}
+function restart() {
+  state.i = 0;
+  if (state.mode === 'ticker') { buildTicker(); T.pos = -(T.gate / T.ch); paintTicker(); }
+  else render();
+  save();
+}
+function schedule() {
+  clearTimeout(timer);
+  timer = setTimeout(function () {
+    if (!state.playing) return;
+    if (state.mode !== 'block') return;   // mode guard: the other renderer owns the screen
+    if (state.i >= state.chunks.length - 1) { pause(); return; }
+    state.i++; render(); save(); schedule();
+  }, RSVP.durationMs(state.chunks[state.i] || '', state.wpm));
+}
+function play() {
+  if (!state.chunks.length) return;
+  state.playing = true; $('play').textContent = '⏸'; $('msg').hidden = true;
+  $('stage').classList.remove('empty');
+  if (state.mode === 'ticker') {
+    $('line').hidden = true; $('ticker').hidden = false;
+    var pos = T.pos;
+    buildTicker();                 // rebuild picks up font/size/chunk changes
+    T.pos = pos;                   // …but resume keeps its place
+    if (T.pos <= 0 || T.pos >= T.total) T.pos = -(T.gate / T.ch); // fresh start: just off the right edge
+    T.last = 0;
+    paintTicker();
+    T.raf = requestAnimationFrame(tickTicker);
+  } else {
+    $('line').hidden = false; $('ticker').hidden = true;
+    schedule();
+  }
+}
+function pause() {
+  state.playing = false; $('play').textContent = '▶';
+  clearTimeout(timer); cancelAnimationFrame(T.raf); save();
+}
+function toggle() { state.playing ? pause() : play(); }
+function ready(keepPos) {
+  if (!keepPos) state.i = 0;
+  $('seek').max = Math.max(0, state.chunks.length - 1);
+  $('msg').hidden = true;
+  $('stage').classList.remove('empty');
+  document.title = (state.src ? state.src + ' — ' : '') + 'Text-scroller';
+  $('meta').textContent = state.src + ' · ' + state.chunks.length + ' chunks';
+  mapSecs();
+  if (state.mode === 'ticker') {
+    $('line').hidden = true; $('ticker').hidden = false;
+    buildTicker(); seekTicker(state.i);
+  } else {
+    $('line').hidden = false;
+    render();
+  }
+}
+async function ingest(files) {
+  var msg = $('msg');
+  msg.hidden = false; msg.className = ''; msg.textContent = 'Extracting…';
+  $('line').hidden = true;
+  try {
+    var parts = [], names = [];
+    for (var i = 0; i < files.length; i++) {
+      var t = await extract(files[i]);
+      if (t && t.trim()) { parts.push(t); names.push(files[i].name); }
+    }
+    var text = parts.join('\n\n'); // multiple files concatenate in pick order
+    if (!text.trim()) throw new Error('No text found in selection.');
+    setText(text, names.join(' + ').slice(0, 60));
+  } catch (e) {
+    msg.className = 'error';
+    msg.textContent = 'Could not read file: ' + e.message;
+  }
+}
+function setText(text, src) {
+  var sec = RSVP.sections(RSVP.sanitize(text));
+  state.chunks = RSVP.chunk(sec.text, state.size);
+  state.marks = sec.marks;
+  state.src = src || 'pasted text';
+  ready(false); save();
+}
+
+/* ---------- wiring ---------- */
+
+$('open').addEventListener('click', function () { $('file').click(); });
+$('file').addEventListener('change', function (e) { if (e.target.files.length) ingest(e.target.files); });
+$('play').addEventListener('click', toggle);
+$('restart').addEventListener('click', restart);
+$('sec').addEventListener('change', function (e) {
+  var s = (state.secs || [])[+e.target.value];
+  if (!s) return;
+  state.i = Math.min(s.i, Math.max(0, state.chunks.length - 1));
+  if (state.mode === 'ticker') seekTicker(state.i); else render();
+  save();
+});
+$('fs').addEventListener('click', function () {
+  document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+});
+$('seek').addEventListener('input', function (e) {
+  state.i = +e.target.value;
+  if (state.mode === 'ticker') seekTicker(state.i); else render();
+  save();
+});
+$('wcol').addEventListener('input', function (e) {
+  document.documentElement.style.setProperty('--word', e.target.value); save();
+});
+$('bgcol').addEventListener('input', function (e) {
+  document.documentElement.style.setProperty('--bg', e.target.value); save();
+});
+$('gcol').addEventListener('input', function (e) {
+  document.documentElement.style.setProperty('--guide', e.target.value); save();
+});
+$('font').addEventListener('input', function (e) {
+  document.documentElement.style.setProperty('--read-font', e.target.value);
+  if (state.mode === 'ticker') { buildTicker(); seekTicker(state.i); } // char width changed
+  save();
+});
+$('fsize').addEventListener('input', function (e) {
+  document.documentElement.style.setProperty('--read-size', (+e.target.value || DEF_SIZE) + 'pt');
+  if (state.mode === 'ticker') { buildTicker(); seekTicker(state.i); } // char width changed
+  save();
+});
+function setMode(m) {   // single switcher: tear BOTH views down, rebuild one, leave paused
+  state.mode = m;
+  $('mode').value = m;
+  pause();                             // clears the block timer + cancels the ticker rAF → stays paused
+  $('line').hidden = true;
+  $('ticker').hidden = true;
+  var els = $('line').children;        // clear the block view (keep its 3 spans intact)
+  for (var i = 0; i < els.length; i++) els[i].textContent = '';
+  $('track').textContent = '';         // clear the ticker view
+  if (state.mode === 'ticker') {
+    $('ticker').hidden = false;
+    buildTicker();                     // rebuild from the current word index
+    seekTicker(state.i);
+  } else {
+    $('line').hidden = false;
+    render();
+  }
+  markMode();
+  save();
+}
+$('mode').addEventListener('input', function (e) { setMode(e.target.value); });
+$('segMode').addEventListener('click', function (e) {
+  var b = e.target.closest('button[data-mode]');
+  if (!b) return;
+  $('mode').value = b.dataset.mode;
+  $('mode').dispatchEvent(new Event('input'));
+});
+$('pace').addEventListener('input', function (e) {
+  state.pace = +e.target.value; $('pacev').value = state.pace + '%';
+  syncTickerSpeed();      // live-update while scrolling
+  save();
+});
+window.addEventListener('resize', function () {
+  if (state.mode === 'ticker' && !$('ticker').hidden) { T.gate = $('ticker').clientWidth / 2; paintTicker(); }
+});
+$('wpm').addEventListener('input', function (e) {
+  state.wpm = +e.target.value; save(); syncSpeed();
+  if (state.mode === 'ticker') syncTickerSpeed();
+  else if (state.playing) schedule();
+});
+$('chunk').addEventListener('input', function (e) {
+  var wordAt = state.i * state.size; // preserve reading position across re-chunking
+  state.size = +e.target.value; $('chunkv').value = state.size;
+  if (state.chunks.length) {
+    state.chunks = RSVP.chunk(state.chunks.join(' '), state.size);
+    mapSecs();
+    state.i = Math.min(Math.floor(wordAt / state.size), state.chunks.length - 1);
+    ready(true);
+  }
+  save();
+  markPreset();
+});
+function markPreset() {
+  Array.prototype.forEach.call(document.querySelectorAll('.presets button'), function (b) {
+    var p = b.dataset.p.split(',');
+    b.classList.toggle('on', +p[0] === state.wpm && +p[1] === state.size);
+  });
+}
+function markMode() {
+  var v = $('mode').value;
+  $('hud').classList.toggle('ticker-mode', v === 'ticker');
+  Array.prototype.forEach.call(document.querySelectorAll('#segMode button'), function (b) {
+    b.classList.toggle('on', b.dataset.mode === v);
+  });
+}
+function syncSpeed() {
+  $('wpmv').value = state.wpm;
+  $('skim').hidden = state.wpm <= 350;
+  markPreset();
+}
+document.querySelector('.presets').addEventListener('click', function (e) {
+  var b = e.target.closest('button[data-p]');
+  if (!b) return;
+  var p = b.dataset.p.split(',');
+  $('wpm').value = p[0]; $('wpm').dispatchEvent(new Event('input'));
+  $('chunk').value = p[1]; $('chunk').dispatchEvent(new Event('input'));
+});
+$('load').addEventListener('click', function () {
+  var t = $('ta').value;
+  if (t.trim()) setText(t, 'pasted text');
+});
+$('tuneBtn').addEventListener('click', function () {
+  var open = $('tune').classList.toggle('open');
+  $('tuneBtn').classList.toggle('on', open);
+  document.body.classList.toggle('menu-open', open);
+  settle();      // flip the drawer direction if needed, then re-clamp into the viewport
+  wake();
+});
+$('msg').addEventListener('click', function () {
+  if (!state.chunks.length) $('file').click();   // empty state: click to open
+});
+document.addEventListener('keydown', function (e) {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); toggle(); }
+  else if (e.key === 'ArrowUp') { $('wpm').value = state.wpm = Math.min(1500, state.wpm + 25); syncSpeed(); if (state.mode === 'ticker') syncTickerSpeed(); else if (state.playing) schedule(); }
+  else if (e.key === 'ArrowDown') { $('wpm').value = state.wpm = Math.max(60, state.wpm - 25); syncSpeed(); if (state.mode === 'ticker') syncTickerSpeed(); else if (state.playing) schedule(); }
+  else if (e.key === 'ArrowRight') { state.i = Math.min(state.chunks.length - 1, state.i + 1); state.mode === 'ticker' ? seekTicker(state.i) : render(); }
+  else if (e.key === 'ArrowLeft') { state.i = Math.max(0, state.i - 1); state.mode === 'ticker' ? seekTicker(state.i) : render(); }
+  else if (e.key.toLowerCase() === 'r') restart();
+  else if (e.key.toLowerCase() === 'f') { $('fs').click(); }
+  else if (e.key.toLowerCase() === 'o') { e.preventDefault(); $('file').click(); }
+  else if (e.key === 'Escape' && document.body.classList.contains('menu-open')) { $('tuneBtn').click(); }
+});
+['dragover', 'drop'].forEach(function (ev) {
+  window.addEventListener(ev, function (e) { e.preventDefault(); });  // a drop elsewhere does nothing
+});
+$('msg').addEventListener('dragover', function (e) { e.preventDefault(); });
+$('msg').addEventListener('drop', function (e) {
+  e.preventDefault();
+  if (e.dataTransfer.files.length) ingest(e.dataTransfer.files);
+});
+
+/* ---------- draggable bar: floating, persisted dock ---------- */
+var POSKEY = 'rsvp.hud.v1';
+var HUDM = 12;   // edge margin for the default (docked) position
+var PAD = 8;     // viewport keep-clear distance when clamping
+var drag = null;
+
+function clampPos(l, t) {   // keep the dock AND its open drawer inside the viewport
+  var d = $('dock'), tu = $('tune');
+  var W = document.documentElement.clientWidth, H = document.documentElement.clientHeight;
+  var dw = d.offsetWidth, dh = d.offsetHeight;
+  var open = tu.classList.contains('open');
+  var th = open ? tu.offsetHeight : 0;
+  var down = open && tu.classList.contains('down');
+  var upExt = down ? 0 : th;      // drawer height reaching above the bar
+  var downExt = down ? th : 0;    // drawer height reaching below the bar
+  l = Math.max(PAD, Math.min(l, W - dw - PAD));
+  var minT = upExt + PAD;
+  var maxT = H - dh - downExt - PAD;
+  if (maxT < minT) maxT = minT;   // drawer taller than the gap: keep its top edge visible
+  t = Math.max(minT, Math.min(t, maxT));
+  return { left: l, top: t };
+}
+function placeDrawer() {   // up by default; drop below only when there's no room above
+  var tu = $('tune');
+  if (!tu.classList.contains('open')) { tu.classList.remove('down'); return; }
+  tu.classList.toggle('down', $('dock').getBoundingClientRect().top - tu.offsetHeight < PAD);
+}
+function settle() {   // after open/close or drag: re-place the drawer, then re-clamp
+  var d = $('dock');
+  if (!d.classList.contains('floating')) { dockDock(); return; }
+  placeDrawer();
+  var r = d.getBoundingClientRect();
+  var p = clampPos(r.left, r.top);
+  d.style.left = p.left + 'px'; d.style.top = p.top + 'px';
+}
+function floatDock(l, t, w) {
+  var d = $('dock');
+  d.classList.add('floating');
+  d.style.right = 'auto'; d.style.bottom = 'auto';   // JS owns the anchor — never a state class
+  d.style.left = l + 'px'; d.style.top = t + 'px'; d.style.width = w + 'px';
+}
+function dockDock() {   // reset: full-width bottom bar, positioned by JS (no CSS `bottom` in play)
+  var d = $('dock');
+  d.classList.remove('floating');
+  var W = document.documentElement.clientWidth, H = document.documentElement.clientHeight;
+  var w = W - 2 * HUDM;
+  d.style.width = w + 'px';                // width first: wrapping can change the height
+  d.style.right = 'auto'; d.style.bottom = 'auto';
+  d.style.left = HUDM + 'px';
+  d.style.top = Math.max(HUDM, H - d.offsetHeight - HUDM) + 'px';
+  placeDrawer();
+  var p = clampPos(HUDM, parseFloat(d.style.top));
+  d.style.left = p.left + 'px'; d.style.top = p.top + 'px';
+}
+function saveHud() {   // persist only while floating; drop the key when docked
+  var d = $('dock');
+  if (!d.classList.contains('floating')) { localStorage.removeItem(POSKEY); return; }
+  var r = d.getBoundingClientRect();
+  try { localStorage.setItem(POSKEY, JSON.stringify({ left: r.left, top: r.top, width: r.width })); } catch (e) {}
+}
+function loadHud() {
+  var s;
+  try { s = JSON.parse(localStorage.getItem(POSKEY) || 'null'); } catch (e) {}
+  if (!s) return;
+  var p = clampPos(s.left, s.top);
+  floatDock(p.left, p.top, s.width);
+}
+$('hud').addEventListener('pointerdown', function (e) {
+  if (e.button) return;   // primary / touch / pen only
+  var isGrip = e.target.closest && e.target.closest('#grip');
+  if (!isGrip && e.target !== $('hud')) return;   // sliders/buttons/scrubber/selects/labels keep working
+  e.preventDefault();
+  var r = $('dock').getBoundingClientRect();
+  drag = {
+    id: e.pointerId, moved: false,
+    sx: e.clientX, sy: e.clientY,
+    dx: e.clientX - r.left, dy: e.clientY - r.top,
+    left: r.left, top: r.top, width: r.width
+  };
+  try { $('hud').setPointerCapture(e.pointerId); } catch (err) {}
+});
+$('hud').addEventListener('pointermove', function (e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (!drag.moved) {
+    if (Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 4) return;
+    floatDock(drag.left, drag.top, drag.width); drag.moved = true;   // float only after real movement
+  }
+  var p = clampPos(e.clientX - drag.dx, e.clientY - drag.dy);
+  $('dock').style.left = p.left + 'px';
+  $('dock').style.top = p.top + 'px';
+});
+function endDrag(e) {
+  if (!drag || (e && e.pointerId !== drag.id)) return;
+  if (drag.moved) {   // re-place the drawer for the new spot, re-clamp, then persist
+    settle();
+    saveHud();
+  }
+  drag = null;
+  try { $('hud').releasePointerCapture(e.pointerId); } catch (err) {}
+}
+$('hud').addEventListener('pointerup', endDrag);
+$('hud').addEventListener('pointercancel', endDrag);
+$('grip').addEventListener('dblclick', function () {
+  dockDock();
+  localStorage.removeItem(POSKEY);
+});
+$('resetDock').addEventListener('click', function () {
+  dockDock();
+  try { localStorage.removeItem(POSKEY); } catch (e) {}
+});
+window.addEventListener('resize', function () {
+  var d = $('dock');
+  if (!d.classList.contains('floating')) { dockDock(); return; }
+  settle();
+  saveHud();
+});
+
+load();
+function markChips() {
+  var cur = $('wcol').value.toLowerCase();
+  Array.prototype.forEach.call($('wchips').querySelectorAll('button'), function (b) {
+    b.classList.toggle('on', b.dataset.c.toLowerCase() === cur);
+  });
+}
+$('wchips').addEventListener('click', function (e) {
+  var b = e.target.closest('button[data-c]');
+  if (!b) return;
+  $('wcol').value = b.dataset.c;
+  $('wcol').dispatchEvent(new Event('input'));   // reuse the real handler (CSS var + save)
+  markChips();
+});
+Array.prototype.forEach.call(document.querySelectorAll('#tune input[type=color]'), function (inp) {
+  var hex = inp.parentNode.querySelector('.hex');
+  // swatch -> hex text; never clobber the field the user is typing in
+  var sync = function () {
+    if (hex && document.activeElement !== hex) hex.value = inp.value.toUpperCase();
+    if (inp.id === 'wcol') markChips();
+  };
+  inp.addEventListener('input', sync);
+  sync();
+  if (!hex) return;
+  // hex text -> swatch: apply the moment it parses, normalise on blur
+  hex.addEventListener('input', function () {
+    var v = hex.value.trim();
+    if (!/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return;
+    var full = v.length === 4 ? '#' + v.slice(1).replace(/./g, function (c) { return c + c; }) : v;
+    inp.value = full;
+    inp.dispatchEvent(new Event('input'));
+  });
+  hex.addEventListener('blur', function () { hex.value = inp.value.toUpperCase(); });
+});
+dockDock();      // JS owns the position in every state (no CSS `bottom`)
+loadHud();       // …but a saved floating spot wins
+syncSpeed();
+$('mode').value = state.mode;
+markMode();
+$('pace').value = state.pace;
+$('pacev').value = state.pace + '%';
+wake();
+</script>
+</body>
+</html>
