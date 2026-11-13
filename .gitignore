@@ -13,3 +13,6 @@ graphify-out/
 
 # platformio board yml experiments
 *.yml
+
+# spec docs stay local
+firmware/*.md
