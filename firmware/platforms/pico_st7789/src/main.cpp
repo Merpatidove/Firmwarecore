@@ -1,20 +1,47 @@
-// esp32_st7789/src/main.cpp — board glue for rsvp_core: serial ingest +
-// playback + BOOT button. Wire format (firmware/README.md): UTF-8 chunks
-// '\n'-delimited; control lines start with SOH (0x01):
-//   0x01 S <byte_offset> <tab> <title>   — one section-table row (repeatable)
-//   0x01 E                                — end of transmission, start reading
-// Plain text that isn't a control line = chunk bytes (pushed verbatim into buf).
+// pico_st7789/src/main.cpp — board glue for rsvp_core on Raspberry Pi Pico
+// (RP2040) / Pico 2 (RP2350) + external ST7789 SPI panel. Free wiring via
+// build_flags. Serial ingest: plain UTF-8 lines = chunks; SOH control lines:
+//   0x01 S <byte_offset> <tab> <title>   — section-table row (repeatable)
+//   0x01 E                               — end of transmission, start reading
+//   0x01 T <idx>                         — switch theme preset
+#ifndef RSVP_PIN_SCK
+#define RSVP_PIN_SCK 10
+#endif
+#ifndef RSVP_PIN_MOSI
+#define RSVP_PIN_MOSI 11
+#endif
+#ifndef RSVP_PIN_CS
+#define RSVP_PIN_CS 9
+#endif
+#ifndef RSVP_PIN_DC
+#define RSVP_PIN_DC 8
+#endif
+#ifndef RSVP_PIN_RST
+#define RSVP_PIN_RST 12
+#endif
+#ifndef RSVP_PIN_BL
+#define RSVP_PIN_BL 13
+#endif
+#ifndef RSVP_PIN_BTN
+#define RSVP_PIN_BTN 14
+#endif
+#ifndef RSVP_SERIAL_BAUD
+#define RSVP_SERIAL_BAUD 115200
+#endif
+// RP2040 has 264KB total SRAM: 96KB book buffer keeps USB+GFX comfortable
+#ifndef RSVP_BUF_SIZE
+#define RSVP_BUF_SIZE (96 * 1024)
+#endif
+#ifndef RSVP_PANEL_IPS
+#define RSVP_PANEL_IPS true
+#endif
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <Arduino_GFX_Library.h>
 #include "rsvp_core.h"
 
-#ifndef RSVP_SERIAL_BAUD
-#define RSVP_SERIAL_BAUD 115200
-#endif
-
-#ifdef ARDUINO_ARCH_RP2040
-// arduino-pico: Arduino_HWSPI takes a SPIClass* + pin config, not raw SCK/MOSI
+// arduino-pico: Arduino_HWSPI takes a SPIClass* + pin config, not raw pins
 static Arduino_DataBus *bus_factory()
 {
     SPI.setSCK(RSVP_PIN_SCK);
@@ -23,30 +50,20 @@ static Arduino_DataBus *bus_factory()
     SPI.begin();
     return new Arduino_HWSPI(RSVP_PIN_DC, RSVP_PIN_CS);
 }
-#else
-static Arduino_DataBus *bus_factory()
-{
-    return new Arduino_HWSPI(RSVP_PIN_DC, RSVP_PIN_CS, RSVP_PIN_SCK, RSVP_PIN_MOSI);
-}
-#endif
 
 static Arduino_DataBus *bus = bus_factory();
 static Arduino_GFX *gfx = new Arduino_ST7789(
-    bus, RSVP_PIN_RST, 0 /* rot */, false /* IPS */,
-    RSVP_LCD_W, RSVP_LCD_H, RSVP_LCD_OFF_X, RSVP_LCD_OFF_Y, RSVP_LCD_OFF_X,
-    RSVP_LCD_OFF_Y);
+    bus, RSVP_PIN_RST, 0 /* rot */, RSVP_PANEL_IPS,
+    240, 320, 0, 0, 0, 0);
 
-// book buffer: static, no heap. ~192KB fits C6 heap easily.
-static char buf[192 * 1024];
+static char buf[RSVP_BUF_SIZE];
 static uint32_t buf_len = 0;
-static rsvp_section sections[128];
+static rsvp_section sections[64];
 static uint16_t n_sections = 0;
 static rsvp r;
 static rsvp_state_blob saved;
-static uint8_t theme_idx = 0;
+static uint8_t theme_idx = 0; /* night */
 static bool playing = false;
-
-#define THEME_COUNT RSVP_THEME_PRESETS
 
 static void apply_theme()
 {
@@ -64,43 +81,31 @@ static void draw_frame()
     const rsvp_theme &t = RSVP_THEMES[theme_idx];
     gfx->fillScreen(t.bg.rgb565);
 
-    // copy chunk out (not NUL-terminated in the stream) and clamp to screen
-    char line[128];
+    char line[128]; /* chunk copy — stream bytes are not NUL-terminated */
     uint32_t n = v.len < sizeof(line) - 1 ? v.len : sizeof(line) - 1;
     memcpy(line, v.text, n);
     line[n] = 0;
 
-    gfx->setTextBound(0, 0, RSVP_LCD_W, RSVP_LCD_H);
+    gfx->setTextBound(0, 0, 240, 320);
     gfx->setTextSize(2);
-    int16_t x = 4, y = (RSVP_LCD_H - 16 * 2) / 2;
-    gfx->setCursor(x, y);
+    gfx->setCursor(4, (320 - 32) / 2);
 
-    const uint16_t cp_before = v.pivot_cp;      // chars left of pivot
-    const uint16_t cp_at = 1;                    // the pivot char itself
-    // print in 3 passes so the pivot glyph gets the accent color
-    uint16_t cp = 0;
+    // 3 passes: fg, accent pivot char, fg (rule #6 ORP highlight)
     uint32_t i = 0;
-    // pass 1: [0, pivot_byte)
     uint32_t seg = v.pivot_byte < n ? v.pivot_byte : n;
     gfx->setTextColor(t.fg.rgb565);
-    for (; i < seg; i++) { gfx->write(line[i]); }
-    // pass 2: pivot char (skip spaces — core guarantees non-space, but clamp)
+    for (; i < seg; i++) gfx->write(line[i]);
     gfx->setTextColor(t.accent.rgb565);
-    if (i < n) { gfx->write(line[i]); i++; }
-    // pass 3: rest
+    if (i < n) gfx->write(line[i++]);
     gfx->setTextColor(t.fg.rgb565);
-    for (; i < n; i++) { gfx->write(line[i]); }
-    (void)cp; (void)cp_before; (void)cp_at;
+    for (; i < n; i++) gfx->write(line[i]);
 
-    // status line: wpm + theme
     gfx->setTextSize(1);
-    gfx->setCursor(4, RSVP_LCD_H - 12);
+    gfx->setCursor(4, 320 - 12);
     gfx->setTextColor(t.guide.rgb565);
-    gfx->printf("%u wpm  %s  ch%u/%u", rsvp_wpm(&r), RSVP_THEMES[theme_idx].name,
-                n_sections ? 1 : 0, n_sections);
+    gfx->printf("%u wpm  %s", rsvp_wpm(&r), RSVP_THEMES[theme_idx].name);
 }
 
-// --- serial ingest: SOH control lines + raw chunk lines -----------------
 static void ingest_serial()
 {
     while (Serial.available()) {
@@ -111,7 +116,6 @@ static void ingest_serial()
                 buf[buf_len++] = (char)c;
             continue;
         }
-        // read one control line
         size_t l = 0;
         while (Serial.available() && l < sizeof(ctl) - 1) {
             int ch = Serial.read();
@@ -120,7 +124,7 @@ static void ingest_serial()
             ctl[l++] = (char)ch;
         }
         ctl[l] = 0;
-        if (ctl[0] == 'S' && ctl[1] == ' ' && n_sections < 128) {
+        if (ctl[0] == 'S' && ctl[1] == ' ' && n_sections < 64) {
             char *tab = strchr(ctl + 2, '\t');
             if (tab) {
                 *tab = 0;
@@ -130,14 +134,14 @@ static void ingest_serial()
             }
         } else if (ctl[0] == 'E') {
             rsvp_init(&r, buf, buf_len, sections, n_sections);
-            rsvp_load(&r, &saved, &theme_idx); // resume if blob valid
+            rsvp_load(&r, &saved, &theme_idx);
             apply_theme();
             playing = true;
             Serial.printf("[rsvp] len=%u sections=%u wpm=%u\n",
                           (unsigned)buf_len, n_sections, rsvp_wpm(&r));
-        } else if (ctl[0] == 'T') { // T <idx> — set theme
+        } else if (ctl[0] == 'T') {
             int idx = atoi(ctl + 1);
-            if (idx >= 0 && idx < THEME_COUNT) {
+            if (idx >= 0 && idx < RSVP_THEME_PRESETS) {
                 theme_idx = (uint8_t)idx;
                 apply_theme();
             }
@@ -157,8 +161,8 @@ void setup()
     gfx->setTextSize(2);
     gfx->setCursor(4, 40);
     gfx->setTextColor(RSVP_THEMES[theme_idx].fg.rgb565);
-    gfx->print("RSVP — send text");
-    Serial.println("[rsvp] ready (SOH S/E protocol, plain lines = chunks)");
+    gfx->print("RSVP - send text");
+    Serial.println("[rsvp] ready (SOH S/E protocol)");
 }
 
 void loop()
@@ -176,8 +180,7 @@ void loop()
         draw_frame();
         next_at = millis() + rsvp_frame(&r).ms;
         rsvp_next(&r);
-        // persist on every chunk: cheap 12-byte struct, board writes NVS lazily
         rsvp_save(&r, theme_idx, &saved);
-        // TODO(board): debounce-write `saved` into NVS every ~5s or on pause
+        // TODO(board): debounce-write `saved` into EEPROM every ~5s or on pause
     }
 }
