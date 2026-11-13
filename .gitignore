@@ -14,5 +14,5 @@ graphify-out/
 # platformio board yml experiments
 *.yml
 
-# spec docs stay local
-firmware/*.md
+# markdown docs stay local (specs/boards/research), not published
+*.md
