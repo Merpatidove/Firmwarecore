@@ -10,7 +10,7 @@ import re
 import sys
 import time
 
-MAX_WORDS = 8
+MAX_WORDS = 1  # true RSVP: one word per chunk; core adds 1.3x/1.8x pauses
 BREAK = re.compile(r'[.;:!?…,]$')
 HEADING = re.compile(
     r'^(BAB\s+\S+.*|DAFTAR.*|KATA PENGANTAR.*|PKM-KI.*|ABSTRAK.*|'

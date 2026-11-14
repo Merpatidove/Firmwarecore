@@ -1,35 +1,35 @@
-// waveshare_c6_lcd_147/src/main.cpp — board glue for rsvp_core, dedicated to
-// the Waveshare ESP32-C6-LCD-1.47 NON-TOUCH board (verified pinmap: SCK=7
-// MOSI=6 CS=14 DC=15 RST=21 BL=22, ST7789 IPS 172x320 offset 34, BOOT=9).
-// Serial ingest: plain UTF-8 lines = chunks; SOH (0x01) control lines:
-//   0x01 S <byte_offset> <tab> <title>   — section-table row (repeatable)
-//   0x01 E                               — end of transmission, start reading
-//   0x01 T <idx>                         — switch theme preset
+// waveshare_c6_lcd_147/src/main.cpp — board glue for rsvp_core: serial ingest
+// + playback + BOOT button. Hardware facts live in include/board.h; frame
+// rendering is shared (firmware/rsvp_render.h). This file is only glue.
+//
+// DEVIATIONS from core/webapp reference (explicit, see also board.h):
+// 1. ARDUINO_USB_CDC_ON_BOOT=1 (platformio.ini): Serial routes to the native
+//    USB port; default UART0 stalls host writes after 64B.
+// 2. Constructor builds PORTRAIT then setRotation(BOARD_LCD_ROT): the GFX
+//    library swaps W/H itself for odd rotations — pre-swapped dims in the
+//    constructor painted only part of the glass.
+// 3. Banner uses ASCII hyphen: the classic GLCD font has no em-dash glyph.
+// 4. Chunking (1 word/chunk) is the companion's job (send_book.py), per
+//    core rules #4/#5 — the firmware never splits text itself.
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
+#include "board.h"
 #include "rsvp_core.h"
+#include "rsvp_render.h"
 
-#ifndef RSVP_SERIAL_BAUD
-#define RSVP_SERIAL_BAUD 115200
-#endif
-
-// C6 USB CDC (Serial) vs UART bridge: this board exposes native USB-CDC.
-// Hosts must NOT need DTR tricks — plain writes work once CDC is up.
-static Arduino_DataBus *bus =
-    new Arduino_HWSPI(15 /* DC */, 14 /* CS */, 7 /* SCK */, 6 /* MOSI */);
-// Build in PORTRAIT (rot 0) with the offsets we verified on this panel
-// (col 34, row 0) — portrait mode was confirmed working. Then rotate to
-// landscape in setup() via setRotation(1). Pre-swapping dims/offsets in the
-// constructor produced partial-glass noise.
+static Arduino_DataBus *bus = new Arduino_HWSPI(
+    BOARD_PIN_DC, BOARD_PIN_CS, BOARD_PIN_SCK, BOARD_PIN_MOSI);
 static Arduino_GFX *gfx = new Arduino_ST7789(
-    bus, 21 /* RST */, 0 /* rot: portrait */, true /* IPS panel */,
-    172, 320, 34, 0, 34, 0);
+    bus, BOARD_PIN_RST, 0 /* portrait ctor — deviation 2 */, BOARD_PANEL_IPS,
+    BOARD_LCD_NATIVE_W, BOARD_LCD_NATIVE_H,
+    BOARD_LCD_COL_OFF, BOARD_LCD_ROW_OFF, BOARD_LCD_COL_OFF, BOARD_LCD_ROW_OFF);
 
-#define RSVP_PIN_BTN 9 /* BOOT button */
-// C6 app DRAM ~320KB: 192KB book buffer fits, leaves headroom for CDC+GFX.
-static char buf[192 * 1024];
+static const rsvp_render_cfg RENDER_CFG = {
+    BOARD_FONT, BOARD_CHAR_W, BOARD_PIVOT_X, BOARD_LCD_W, BOARD_LCD_H};
+
+static char buf[BOARD_BUF_SIZE];
 static uint32_t buf_len = 0;
-static rsvp_section sections[128];
+static rsvp_section sections[BOARD_MAX_SECTIONS];
 static uint16_t n_sections = 0;
 static rsvp r;
 static rsvp_state_blob saved;
@@ -40,42 +40,6 @@ static void apply_theme()
 {
     const rsvp_theme &t = RSVP_THEMES[theme_idx];
     gfx->fillScreen(t.bg.rgb565);
-}
-
-static void draw_frame()
-{
-    const rsvp_view v = rsvp_frame(&r);
-    if (!v.text || v.len == 0) {
-        playing = false; /* end of stream: park */
-        return;
-    }
-    const rsvp_theme &t = RSVP_THEMES[theme_idx];
-    gfx->fillScreen(t.bg.rgb565);
-
-    char line[128]; /* chunk copy — stream bytes are not NUL-terminated */
-    uint32_t n = v.len < sizeof(line) - 1 ? v.len : sizeof(line) - 1;
-    memcpy(line, v.text, n);
-    line[n] = 0;
-
-    // ASCII-only banner strings; the classic GLCD font has no em-dash glyph.
-    gfx->setTextBound(0, 0, 320, 172);
-    gfx->setTextSize(2);
-    gfx->setCursor(4, (172 - 32) / 2);
-
-    // 3 passes: fg, accent pivot char, fg (rule #6 ORP highlight)
-    uint32_t i = 0;
-    uint32_t seg = v.pivot_byte < n ? v.pivot_byte : n;
-    gfx->setTextColor(t.fg.rgb565);
-    for (; i < seg; i++) gfx->write(line[i]);
-    gfx->setTextColor(t.accent.rgb565);
-    if (i < n) gfx->write(line[i++]);
-    gfx->setTextColor(t.fg.rgb565);
-    for (; i < n; i++) gfx->write(line[i]);
-
-    gfx->setTextSize(1);
-    gfx->setCursor(4, 172 - 12);
-    gfx->setTextColor(t.guide.rgb565);
-    gfx->printf("%u wpm  %s", rsvp_wpm(&r), RSVP_THEMES[theme_idx].name);
 }
 
 static void ingest_serial()
@@ -96,7 +60,7 @@ static void ingest_serial()
             ctl[l++] = (char)ch;
         }
         ctl[l] = 0;
-        if (ctl[0] == 'S' && ctl[1] == ' ' && n_sections < 128) {
+        if (ctl[0] == 'S' && ctl[1] == ' ' && n_sections < BOARD_MAX_SECTIONS) {
             char *tab = strchr(ctl + 2, '\t');
             if (tab) {
                 *tab = 0;
@@ -123,18 +87,19 @@ static void ingest_serial()
 
 void setup()
 {
-    Serial.begin(RSVP_SERIAL_BAUD);
-    pinMode(RSVP_PIN_BTN, INPUT_PULLUP);
+    Serial.begin(BOARD_SERIAL_BAUD);
+    pinMode(BOARD_PIN_BTN, INPUT_PULLUP);
     gfx->begin();
-    gfx->setRotation(1); /* landscape */
-    pinMode(22, OUTPUT); /* BL */
-    digitalWrite(22, HIGH);
+    gfx->setRotation(BOARD_LCD_ROT); /* deviation 2 */
+    pinMode(BOARD_PIN_BL, OUTPUT);
+    digitalWrite(BOARD_PIN_BL, HIGH);
     apply_theme();
 
+    /* ASCII hyphen only — deviation 3 */
     gfx->setTextSize(2);
     gfx->setCursor(4, 40);
     gfx->setTextColor(RSVP_THEMES[theme_idx].fg.rgb565);
-    gfx->print("RSVP - send text"); /* ASCII hyphen: font lacks em-dash */
+    gfx->print("RSVP - send text");
     Serial.println("[rsvp] ready (SOH S/E protocol)");
 }
 
@@ -143,15 +108,22 @@ void loop()
     ingest_serial();
 
     static uint32_t last_btn = 0;
-    if (digitalRead(RSVP_PIN_BTN) == LOW && millis() - last_btn > 250) {
+    if (digitalRead(BOARD_PIN_BTN) == LOW && millis() - last_btn > 250) {
         last_btn = millis();
         playing = !playing;
     }
 
     static uint32_t next_at = 0;
     if (playing && (int32_t)(millis() - next_at) >= 0) {
-        draw_frame();
-        next_at = millis() + rsvp_frame(&r).ms;
+        const rsvp_view v = rsvp_frame(&r);
+        if (!v.text || v.len == 0) {
+            playing = false; /* end of stream: park */
+            return;
+        }
+        rsvp_render_frame(gfx, v, RSVP_THEMES[theme_idx], RENDER_CFG);
+        rsvp_render_status(gfx, RENDER_CFG, RSVP_THEMES[theme_idx],
+                           rsvp_wpm(&r));
+        next_at = millis() + v.ms;
         rsvp_next(&r);
         rsvp_save(&r, theme_idx, &saved);
         // TODO(board): debounce-write `saved` into NVS every ~5s or on pause
