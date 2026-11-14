@@ -21,7 +21,8 @@ static Arduino_GFX *gfx = new Arduino_ST7789(
     BOARD_LCD_COL_OFF, BOARD_LCD_ROW_OFF, BOARD_LCD_COL_OFF, BOARD_LCD_ROW_OFF);
 
 static const rsvp_render_cfg RENDER_CFG = {
-    BOARD_FONT, BOARD_CHAR_W, BOARD_PIVOT_X, BOARD_LCD_W, BOARD_LCD_H};
+    BOARD_FONT, BOARD_CHAR_W, BOARD_PIVOT_X, BOARD_LCD_W, BOARD_LCD_H,
+    BOARD_STATUS_RGB565};
 
 static char buf[BOARD_BUF_SIZE];
 static uint32_t buf_len = 0;

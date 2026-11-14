@@ -8,7 +8,9 @@
  *    a board render choice (Spritz-style). The webapp does the same in JS.
  * 2. Chunk bytes are copied to a stack line[] and clamped to 63 chars —
  *    one-word chunks (companion, MAX_WORDS=1) always fit.
- * 3. Status bar convention: "wpm  theme" bottom-left, guide color, size 1. */
+ * 3. Status bar convention: "wpm  theme" bottom-left, size 1, FIXED medium
+ *    grey (cfg.status_rgb565) — the night/ocean/forest theme guide colors
+ *    are near-invisible on their own dark bg; core palettes stay untouched. */
 #ifndef RSVP_RENDER_H
 #define RSVP_RENDER_H
 
@@ -20,6 +22,7 @@ typedef struct {
     uint16_t char_w; /* = 6 * font */
     uint16_t pivot_x; /* ORP column (px) the pivot glyph is parked at */
     uint16_t w, h;   /* logical (post-rotation) screen dims */
+    uint16_t status_rgb565; /* status-bar text color (see deviation 3) */
 } rsvp_render_cfg;
 
 /* Draw one chunk centered vertically, pivot parked at cfg.pivot_x. */
@@ -57,14 +60,14 @@ static inline void rsvp_render_frame(Arduino_GFX *gfx, const rsvp_view &v,
     for (; i < n; i++) gfx->write(line[i]);
 }
 
-/* Status line: "<wpm> wpm  <theme>" bottom-left, guide color, size 1. */
+/* Status line: "<wpm> wpm  <theme>" bottom-left, size 1, fixed grey. */
 static inline void rsvp_render_status(Arduino_GFX *gfx,
                                       const rsvp_render_cfg &cfg,
                                       const rsvp_theme &t, uint16_t wpm)
 {
     gfx->setTextSize(1);
     gfx->setCursor(4, cfg.h - 10);
-    gfx->setTextColor(t.guide.rgb565);
+    gfx->setTextColor(cfg.status_rgb565);
     gfx->printf("%u wpm  %s", (unsigned)wpm, t.name);
 }
 

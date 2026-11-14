@@ -34,5 +34,6 @@
 #define BOARD_FONT      4
 #define BOARD_CHAR_W    (6 * BOARD_FONT)
 #define BOARD_PIVOT_X   (BOARD_LCD_W * 3 / 10)
+#define BOARD_STATUS_RGB565  0x8C73           /* medium grey #8a8f98 */
 
 #endif /* BOARD_H */
