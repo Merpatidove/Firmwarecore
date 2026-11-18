@@ -16,3 +16,5 @@ graphify-out/
 
 # markdown docs stay local (specs/boards/research), not published
 *.md
+
+*.zip
