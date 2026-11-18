@@ -95,6 +95,18 @@ def build(a, lines):
     return rows, buf
 
 
+def stream_bytes(a, rows, buf):
+    """The exact byte stream — serial send and --out file share this."""
+    out = bytearray()
+    if a.theme is not None:
+        out += f'\x01T {a.theme}\n'.encode('ascii')
+    for off, title in rows:
+        out += f'\x01S {off}\t{title}\n'.encode('ascii')
+    out += bytes(buf)
+    out += b'\x01E\n'
+    return bytes(out)
+
+
 def send_book(a, rows, buf):
     try:
         import serial
@@ -143,6 +155,8 @@ def send_book(a, rows, buf):
         time.sleep(0.3)
         ser.write(b'\x01E\n')
         ser.flush()
+        # wire-order parity with stream_bytes(): T, S rows, buf, E — keep
+        # both paths in sync if the protocol ever grows (see --out).
     except serial.SerialTimeoutException:
         print('WRITE TIMEOUT — cabut-pasang kabel USB board, lalu ulangi.')
         ser.close()
@@ -172,12 +186,39 @@ def main():
                     help='max bytes (C6 book buffer = 192KB)')
     ap.add_argument('--max-sections', type=int, default=120)
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--out', default=None,
+                    help='write the .rsvp file for SD cards instead of serial')
+    ap.add_argument('--verify', default=None,
+                    help='re-parse this .rsvp and diff against --file output')
     a = ap.parse_args()
 
     raw = open(a.file, encoding='utf-8', errors='replace').read()
     lines = [c for c in (clean_line(l) for l in raw.splitlines()) if c]
     rows, buf = build(a, lines)
     print(f'sections={len(rows)} bytes={len(buf)} limit={a.limit}')
+
+    if a.verify:
+        expected = stream_bytes(a, rows, buf)
+        actual = open(a.verify, 'rb').read()
+        if actual == expected:
+            print(f'VERIFY OK: {a.verify} byte-identical '
+                  f'({len(expected)} bytes)')
+            return
+        # differ: locate first mismatch for a useful message
+        n = min(len(actual), len(expected))
+        pos = next((i for i in range(n) if actual[i] != expected[i]), n)
+        print(f'VERIFY FAIL at byte {pos}: '
+              f'file {len(actual)}B vs expected {len(expected)}B')
+        sys.exit(1)
+
+    if a.out:
+        data = stream_bytes(a, rows, buf)
+        open(a.out, 'wb').write(data)
+        print(f'wrote {a.out} ({len(data)} bytes)')
+        print(f'next: py check_rsvp.py {a.out} '
+              f'--expect-sections {len(rows)}')
+        return
+
     if a.dry_run:
         for off, t in rows[:12]:
             print(f'  {off:7d}  {t}')

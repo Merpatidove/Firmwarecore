@@ -38,4 +38,18 @@
 #define BOARD_PIVOT_X   (BOARD_LCD_W * 3 / 10)
 #define BOARD_STATUS_RGB565  0x8C73           /* medium grey #8a8f98 */
 
+/* ---- SD card slot (shares SPI bus with LCD; own MISO + CS) ---- */
+#define BOARD_PIN_SD_CS     4
+#define BOARD_PIN_SD_MISO   5
+#define BOARD_SD_FILE_MAX   50    /* max .rsvp entries in the menu */
+#define BOARD_SD_NAME_MAX   56    /* max basename length (incl NUL) */
+
+/* ---- Single-button timing (BOOT btn; active LOW, INPUT_PULLUP) ---- */
+#define BOARD_BTN_SHORT_MS   400   /* < this = short press */
+#define BOARD_BTN_LONG_MS    800   /* >= this = long press */
+#define BOARD_BTN_DEBOUNCE_MS 30
+
+/* ---- Menu layout ---- */
+#define BOARD_MENU_ROWS     16    /* visible rows in the file list */
+
 #endif /* BOARD_H */
