@@ -28,7 +28,8 @@
   }
 
   /* ---------- idle chrome: everything fades unless you ask for it ---------- */
-  #hud, .panel { transition: opacity .45s ease, transform .45s ease; }
+  #hud { transition: opacity .45s ease, transform .45s ease; }
+  .panel { transition: opacity .45s ease; }  /* no transform transition: drag swaps translateY(-50%) for inline left/top and must not animate */
   body:not(.awake) #hud {
     opacity: 0; transform: translate(-50%, 8px); pointer-events: none;
   }
@@ -124,7 +125,7 @@
 
   /* ---------- side panels: fixed, graphics-editor style ---------- */
   .panel {
-    position: fixed; top: 14px; width: 230px; z-index: 10;
+    position: fixed; top: 50%; transform: translateY(-50%); width: 230px; z-index: 10;
     display: flex; flex-direction: column; gap: 10px;
     height: auto; max-height: calc(100vh - 110px);
     padding: 10px 14px 12px; background: var(--panel);
@@ -209,7 +210,7 @@
   @media (max-width: 980px) {
     main { padding: 0 4vw; }
     .panel {
-      left: 12px; right: 12px; width: auto; top: auto; bottom: 74px;
+      left: 12px; right: 12px; width: auto; top: auto; bottom: 74px; transform: none;
       flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 14px;
       max-height: 34vh;
     }
@@ -363,8 +364,8 @@ function clampPanel(p) {   // keep a moved panel inside the viewport
   p.el.style.left = Math.min(Math.max(parseFloat(p.el.style.left) || MARGIN, MARGIN), maxL) + 'px';
   p.el.style.top = Math.min(Math.max(parseFloat(p.el.style.top) || MARGIN, MARGIN), maxT) + 'px';
 }
-function resetPanel(p) {   // clear inline left/top/right + storage so CSS dock re-applies
-  p.el.style.left = ''; p.el.style.top = ''; p.el.style.right = '';
+function resetPanel(p) {   // clear inline left/top/right/transform + storage so CSS dock re-applies
+  p.el.style.left = ''; p.el.style.top = ''; p.el.style.right = ''; p.el.style.transform = '';
   try { localStorage.removeItem(p.key); } catch (e) {}
 }
 function showPanel(p) {
@@ -385,6 +386,7 @@ PANELS.forEach(function (p) {
       p.el.style.right = 'auto';
       p.el.style.left = s.left + 'px';
       p.el.style.top = s.top + 'px';
+      p.el.style.transform = 'none';   // stored top is the box's own top, not the centred one
       clampPanel(p);
     }
   } catch (e) {}
@@ -396,6 +398,13 @@ PANELS.forEach(function (p) {
     if (e.target.closest('button, input, select, textarea')) return;
     var r = p.el.getBoundingClientRect();
     drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    // translate(-50%) would corrupt left/top math on the first move; pin to rect now
+    if (!p.el.style.left) {
+      p.el.style.left = r.left + 'px';
+      p.el.style.top = r.top + 'px';
+      p.el.style.right = 'auto';
+      p.el.style.transform = 'none';
+    }
     head.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -404,6 +413,7 @@ PANELS.forEach(function (p) {
     p.el.style.right = 'auto';   // convert right-anchor to left/top on first drag
     p.el.style.left = (e.clientX - drag.dx) + 'px';
     p.el.style.top = (e.clientY - drag.dy) + 'px';
+    p.el.style.transform = 'none';
     clampPanel(p);
   });
   function endDrag() {
