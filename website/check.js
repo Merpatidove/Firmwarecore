@@ -7,7 +7,7 @@ const path = require('path');
 const START = '<!-- FEATURE-INVENTORY:START -->';
 const END = '<!-- FEATURE-INVENTORY:END -->';
 
-const research = fs.readFileSync(path.join(__dirname, 'RESEARCH.md'), 'utf8');
+const research = fs.readFileSync(path.join(__dirname, '..', 'RESEARCH.md'), 'utf8');
 const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 
 const start = research.indexOf(START);

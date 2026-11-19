@@ -4,10 +4,10 @@
 // UTF-16 units, the C counts codepoints — identical for BMP, so astral chars
 // excluded. Run: node firmware/fuzz_check.js
 'use strict';
-const R = require('../rsvp-core.js');
+const R = require('../website/rsvp-core.js');
 const assert = require('assert');
-// NOTE: reaches up into the webapp tree to import the JS engine. This is the
-// ONLY coupling between firmware/ and the webapp — a test-only dependency.
+// NOTE: reaches into website/ to import the JS engine. This is the ONLY
+// coupling between firmware/ and the webapp — a test-only dependency.
 
 // ---- transliteration of device/rsvp_core.c ----
 const isLead = (b) => (b & 0xC0) !== 0x80;
