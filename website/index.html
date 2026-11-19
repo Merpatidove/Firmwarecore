@@ -41,6 +41,7 @@
   #stage {
     flex: 1; position: relative; display: grid; place-items: center;
     overflow: hidden; padding: 0 4vw; cursor: default;
+    justify-content: center; /* center the track itself: an over-wide line must overflow both edges, not just right */
   }
   /* soft spotlight where the words live */
   #stage::before {
@@ -123,9 +124,10 @@
 
   /* ---------- side panels: fixed, graphics-editor style ---------- */
   .panel {
-    position: fixed; top: 14px; bottom: 74px; width: 230px; z-index: 10;
-    display: flex; flex-direction: column; gap: 12px;
-    padding: 12px 14px; background: var(--panel);
+    position: fixed; top: 14px; width: 230px; z-index: 10;
+    display: flex; flex-direction: column; gap: 10px;
+    height: auto; max-height: calc(100vh - 110px);
+    padding: 10px 14px 12px; background: var(--panel);
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
     border: 1px solid var(--hair); border-radius: 12px;
     box-shadow: 0 12px 34px rgba(0,0,0,.45);
@@ -133,16 +135,38 @@
   }
   #srcPanel { left: 14px; }
   #appPanel { right: 14px; }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    cursor: grab; user-select: none; touch-action: none;
+    margin: -2px -6px 0; padding: 2px 6px; border-radius: 8px;
+  }
+  .panel-head:active { cursor: grabbing; }
+  .panel-head button { font-size: 11px; padding: 2px 6px; color: var(--dim); }
+  /* edge tabs: the way back in after a panel is hidden; never idle-faded */
+  .edge-tab {
+    position: fixed; top: 50%; transform: translateY(-50%); z-index: 11;
+    width: 22px; padding: 16px 0; writing-mode: vertical-rl;
+    text-align: center; font-size: 9px; letter-spacing: .24em;
+    text-transform: uppercase; color: var(--dim); background: var(--panel);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--hair); cursor: pointer; user-select: none;
+  }
+  .edge-tab:hover { color: var(--fg); border-color: rgba(255,255,255,.16); }
+  #srcTab { left: 0; border-radius: 0 8px 8px 0; border-left: none; }
+  #appTab { right: 0; border-radius: 8px 0 0 8px; border-right: none; }
   .panel h2 {
     margin: 0; font-size: 10px; font-weight: 600; letter-spacing: .14em;
     text-transform: uppercase; color: #6e727b;
   }
   .panel .group {
-    flex-basis: 100%; font-size: 10px; letter-spacing: .14em;
+    font-size: 10px; letter-spacing: .14em;
     text-transform: uppercase; color: #6e727b;
   }
-  .panel label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-  .panel input[type=color] { display: none; }   /* state holder only — picker must not open */
+  .panel .group > * { font-size: 12px; text-transform: none; letter-spacing: normal; }
+  .panel label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .panel label > span { flex: none; min-width: 78px; }   /* shared label column keeps hex inputs aligned */
+  .panel label select { flex: 1; min-width: 0; }
+  .color-state { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .panel .hex {
     width: 64px; padding: 3px 4px; font: 11px ui-monospace, 'Cascadia Mono', monospace;
     color: var(--fg); background: transparent; letter-spacing: .06em;
@@ -190,6 +214,7 @@
       max-height: 34vh;
     }
     .panel .keys { display: none; }
+    .panel .panel-head { flex-basis: 100%; }
     #srcPanel { bottom: 74px; }
     #appPanel { bottom: calc(74px + 40vh); }
   }
@@ -206,7 +231,7 @@
 </main>
 
 <div class="panel" id="srcPanel">
-  <h2>Source</h2>
+  <div class="panel-head"><h2>Source</h2><button type="button" class="panel-reset" title="reset position (double-click does too)">⌂</button></div>
   <div>
     <button id="open" title="Open file (O)">open</button>
     <input type="file" id="file" hidden multiple
@@ -214,32 +239,41 @@
     <span id="meta"></span>
   </div>
   <select id="sec" hidden title="jump to a section"></select>
-  <span class="group">Paste text</span>
-  <textarea id="ta" placeholder="Paste any text here, then Load."></textarea>
-  <button id="load">Load</button>
+  <span class="group">Paste text
+    <textarea id="ta" placeholder="Paste any text here, then Load."></textarea>
+    <button id="load">Load</button>
+  </span>
   <span class="keys"><kbd>space</kbd> play · <kbd>↑↓</kbd> speed · <kbd>←→</kbd> jump · <kbd>R</kbd> restart · <kbd>F</kbd> fullscreen · <kbd>O</kbd> open</span>
 </div>
 
 <div class="panel" id="appPanel">
-  <h2>Appearance</h2>
-  <span class="group">Text</span>
-  <label>font
-    <select id="font">
-      <option value="'Cascadia Mono', Consolas, 'Courier New', monospace" selected>Cascadia Mono</option>
-      <option value="Consolas, monospace">Consolas</option>
-      <option value="'Cascadia Code', Consolas, monospace">Cascadia Code</option>
-      <option value="Menlo, Consolas, monospace">Menlo</option>
-      <option value="'Courier New', Courier, monospace">Courier New</option>
-      <option value="ui-monospace, monospace">System mono</option>
-    </select>
-  </label>
-  <label>size <input type="number" id="fsize" min="6" max="72" step="1" value="32"> pt</label>
-  <span class="group">Accent</span>
-  <span class="chips" id="wchips" title="accent presets"><span class="ct">presets</span><button type="button" data-c="#ffb347" style="--c:#ffb347" title="amber"></button><button type="button" data-c="#ffffff" style="--c:#ffffff" title="white"></button><button type="button" data-c="#7ee787" style="--c:#7ee787" title="green"></button><button type="button" data-c="#ff7a6e" style="--c:#ff7a6e" title="red"></button><button type="button" data-c="#79c0ff" style="--c:#79c0ff" title="blue"></button></span>
-  <label>word <input type="color" id="wcol" value="#ffb347"><input class="hex" id="whex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="word colour, hex"></label>
-  <label>background <input type="color" id="bgcol" value="#08090c"><input class="hex" id="bhex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="background colour, hex"></label>
-  <label>guide <input type="color" id="gcol" value="#2a2e36"><input class="hex" id="ghex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="guide colour, hex"></label>
+  <div class="panel-head"><h2>Appearance</h2><button type="button" class="panel-reset" title="reset position (double-click does too)">⌂</button></div>
+  <span class="group">Text
+    <label><span>font</span>
+      <select id="font">
+        <option value="'Cascadia Mono', Consolas, 'Courier New', monospace" selected>Cascadia Mono</option>
+        <option value="Consolas, monospace">Consolas</option>
+        <option value="'Cascadia Code', Consolas, monospace">Cascadia Code</option>
+        <option value="Menlo, Consolas, monospace">Menlo</option>
+        <option value="'Courier New', Courier, monospace">Courier New</option>
+        <option value="ui-monospace, monospace">System mono</option>
+      </select>
+    </label>
+    <label><span>size</span> <input type="number" id="fsize" min="6" max="72" step="1" value="32"> pt</label>
+  </span>
+  <span class="group">Accent
+    <span class="chips" id="wchips" title="accent presets"><span class="ct">presets</span><button type="button" data-c="#ffb347" style="--c:#ffb347" title="amber"></button><button type="button" data-c="#ffffff" style="--c:#ffffff" title="white"></button><button type="button" data-c="#7ee787" style="--c:#7ee787" title="green"></button><button type="button" data-c="#ff7a6e" style="--c:#ff7a6e" title="red"></button><button type="button" data-c="#79c0ff" style="--c:#79c0ff" title="blue"></button></span>
+    <label><span>word</span><input class="hex" id="whex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="word colour, hex"></label>
+    <span class="chips" id="bchips" title="background presets"><span class="ct">presets</span><button type="button" data-c="#08090c" style="--c:#08090c" title="default"></button><button type="button" data-c="#000000" style="--c:#000000" title="black"></button><button type="button" data-c="#12100d" style="--c:#12100d" title="warm black"></button><button type="button" data-c="#0a0e18" style="--c:#0a0e18" title="navy"></button><button type="button" data-c="#14171c" style="--c:#14171c" title="grey"></button></span>
+    <label><span>background</span><input class="hex" id="bhex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="background colour, hex"></label>
+    <span class="chips" id="gchips" title="guide presets"><span class="ct">presets</span><button type="button" data-c="#2a2e36" style="--c:#2a2e36" title="default"></button><button type="button" data-c="#4a4f58" style="--c:#4a4f58" title="grey"></button><button type="button" data-c="#3d2a2a" style="--c:#3d2a2a" title="dim red"></button><button type="button" data-c="#22303f" style="--c:#22303f" title="dim blue"></button><button type="button" data-c="#233328" style="--c:#233328" title="dim green"></button></span>
+    <label><span>guide</span><input class="hex" id="ghex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="guide colour, hex"></label>
+  </span>
+  <div hidden><input type="color" class="color-state" id="wcol" value="#ffb347"><input type="color" class="color-state" id="bgcol" value="#08090c"><input type="color" class="color-state" id="gcol" value="#2a2e36"></div>
 </div>
+
+<span class="edge-tab" id="srcTab" hidden>Source</span>
+<span class="edge-tab" id="appTab" hidden>Appearance</span>
 
 <div id="hud">
   <button id="restart" title="R">↺</button>
@@ -304,6 +338,101 @@ window.addEventListener('pointerdown', function () { held = true; }, { passive: 
   window.addEventListener(ev, function () { held = false; wake(); });
 });
 window.addEventListener('blur', function () { held = false; });
+
+/* ---------- panels: drag by header, hide on outside click, edge tabs ---------- */
+var MARGIN = 8;
+var PANELS = [
+  { el: $('srcPanel'), tab: $('srcTab'), key: 'rsvp.panel.src.v1', side: 'left' },
+  { el: $('appPanel'), tab: $('appTab'), key: 'rsvp.panel.app.v1', side: 'right' }
+];
+
+function clampPanel(p) {   // keep a moved panel inside the viewport
+  if (!p.el.style.left) return;   // never moved -> CSS dock position still applies
+  var maxL = Math.max(MARGIN, window.innerWidth - p.el.offsetWidth - MARGIN);
+  var maxT = Math.max(MARGIN, window.innerHeight - p.el.offsetHeight - MARGIN);
+  p.el.style.left = Math.min(Math.max(parseFloat(p.el.style.left) || MARGIN, MARGIN), maxL) + 'px';
+  p.el.style.top = Math.min(Math.max(parseFloat(p.el.style.top) || MARGIN, MARGIN), maxT) + 'px';
+}
+function resetPanel(p) {   // clear inline left/top/right + storage so CSS dock re-applies
+  p.el.style.left = ''; p.el.style.top = ''; p.el.style.right = '';
+  try { localStorage.removeItem(p.key); } catch (e) {}
+}
+function showPanel(p) {
+  p.el.style.display = '';
+  p.tab.hidden = true;
+  clampPanel(p);
+}
+function hidePanel(p) {
+  p.el.style.display = 'none';
+  p.tab.hidden = false;
+}
+
+PANELS.forEach(function (p) {
+  // restore persisted position; clamp into today's viewport
+  try {
+    var s = JSON.parse(localStorage.getItem(p.key) || 'null');
+    if (s) {
+      p.el.style.right = 'auto';
+      p.el.style.left = s.left + 'px';
+      p.el.style.top = s.top + 'px';
+      clampPanel(p);
+    }
+  } catch (e) {}
+
+  // drag from the header (never from buttons/inputs inside it)
+  var head = p.el.querySelector('.panel-head');
+  var drag = null;
+  head.addEventListener('pointerdown', function (e) {
+    if (e.target.closest('button, input, select, textarea')) return;
+    var r = p.el.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    head.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  head.addEventListener('pointermove', function (e) {
+    if (!drag) return;
+    p.el.style.right = 'auto';   // convert right-anchor to left/top on first drag
+    p.el.style.left = (e.clientX - drag.dx) + 'px';
+    p.el.style.top = (e.clientY - drag.dy) + 'px';
+    clampPanel(p);
+  });
+  function endDrag() {
+    if (!drag) return;
+    drag = null;
+    if (!p.el.style.left) return;   // click without move: nothing to persist
+    try {
+      localStorage.setItem(p.key, JSON.stringify({
+        left: parseFloat(p.el.style.left) || 0, top: parseFloat(p.el.style.top) || 0
+      }));
+    } catch (e) {}
+  }
+  head.addEventListener('pointerup', endDrag);
+  head.addEventListener('pointercancel', endDrag);
+
+  // double-click header or ⌂ button -> back to the docked default
+  head.addEventListener('dblclick', function (e) {
+    if (e.target.closest('button, input, select, textarea')) return;
+    resetPanel(p);
+  });
+  head.querySelector('.panel-reset').addEventListener('click', function () { resetPanel(p); });
+
+  // tab brings the panel back
+  p.tab.addEventListener('click', function () {
+    showPanel(p);
+  });
+});
+
+// click outside any panel/tab/hud hides the open panels
+window.addEventListener('pointerdown', function (e) {
+  if (!e.target.closest('.panel, .edge-tab, #hud')) PANELS.forEach(hidePanel);
+}, true);
+
+// keep moved panels on screen when the window shrinks
+window.addEventListener('resize', function () {
+  PANELS.forEach(function (p) {
+    if (p.el.style.display !== 'none' && p.el.style.left) clampPanel(p);
+  });
+});
 
 /* ---------- extraction (all local) ---------- */
 
@@ -585,6 +714,14 @@ function render() {
   $('line').className = 'cur';      // block mode: whole group coloured
   l.style.paddingLeft = (R > L ? d : 0) + 'ch';
   r.style.paddingRight = (L > R ? d : 0) + 'ch';
+  // balance padding doubles box width; shrink to fit the paneled stage.
+  // Measure the real laid-out box (padding, letter-spacing and all), not a model.
+  $('line').style.transform = '';            // clear first: the rect must be untransformed
+  var boxW = $('line').getBoundingClientRect().width;
+  var availW = $('stage').clientWidth - 24;
+  $('line').style.transform = availW > 0 && boxW > availW
+    ? 'scale(' + Math.max(0.5, availW / boxW) + ')'
+    : '';
   $('seek').value = state.i;
   $('pos').textContent = (state.i + 1) + ' / ' + state.chunks.length;
   paintProgress();
@@ -752,25 +889,31 @@ $('msg').addEventListener('drop', function (e) {
 });
 
 load();
+var CHIPS = [['wchips', 'wcol'], ['bchips', 'bgcol'], ['gchips', 'gcol']];
 function markChips() {
-  var cur = $('wcol').value.toLowerCase();
-  Array.prototype.forEach.call($('wchips').querySelectorAll('button'), function (b) {
-    b.classList.toggle('on', b.dataset.c.toLowerCase() === cur);
+  CHIPS.forEach(function (cp) {
+    var cur = $(cp[1]).value.toLowerCase();
+    Array.prototype.forEach.call($(cp[0]).querySelectorAll('button'), function (b) {
+      b.classList.toggle('on', b.dataset.c.toLowerCase() === cur);
+    });
   });
 }
-$('wchips').addEventListener('click', function (e) {
-  var b = e.target.closest('button[data-c]');
-  if (!b) return;
-  $('wcol').value = b.dataset.c;
-  $('wcol').dispatchEvent(new Event('input'));   // reuse the real handler (CSS var + save)
-  markChips();
+CHIPS.forEach(function (cp) {
+  $(cp[0]).addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-c]');
+    if (!b) return;
+    $(cp[1]).value = b.dataset.c;
+    $(cp[1]).dispatchEvent(new Event('input'));   // reuse the real handler (CSS var + save)
+    markChips();
+  });
 });
-Array.prototype.forEach.call(document.querySelectorAll('.panel input[type=color]'), function (inp) {
-  var hex = inp.parentNode.querySelector('.hex');
+var HEX_OF = { wcol: 'whex', bgcol: 'bhex', gcol: 'ghex' };   // color inputs live in a hidden container now, not next to the hex field
+Array.prototype.forEach.call(document.querySelectorAll('#wcol, #bgcol, #gcol'), function (inp) {
+  var hex = $(HEX_OF[inp.id]);
   // swatch -> hex text; never clobber the field the user is typing in
   var sync = function () {
     if (hex && document.activeElement !== hex) hex.value = inp.value.toUpperCase();
-    if (inp.id === 'wcol') markChips();
+    markChips();
   };
   inp.addEventListener('input', sync);
   sync();
