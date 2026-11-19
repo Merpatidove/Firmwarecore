@@ -158,11 +158,12 @@
     margin: 0; font-size: 10px; font-weight: 600; letter-spacing: .14em;
     text-transform: uppercase; color: #6e727b;
   }
-  .panel .group {
-    font-size: 10px; letter-spacing: .14em;
-    text-transform: uppercase; color: #6e727b;
+  .panel .group { display: flex; flex-direction: column; gap: 7px; }
+  .panel .group + .group { margin-top: 6px; }  /* + 10px panel gap = 16px between blocks */
+  .panel .group .gt {
+    font-size: 10px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: #6e727b; white-space: nowrap;
   }
-  .panel .group > * { font-size: 12px; text-transform: none; letter-spacing: normal; }
   .panel label { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
   .panel label > span { flex: none; min-width: 78px; }   /* shared label column keeps hex inputs aligned */
   .panel label select { flex: 1; min-width: 0; }
@@ -175,7 +176,6 @@
   .panel .hex:hover { border-color: var(--hair); }
   .panel .hex:focus { border-color: var(--word); outline: none; }
   .panel .chips { display: flex; align-items: center; gap: 7px; }
-  .panel .chips .ct { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: #6e727b; }
   .panel .chips button {
     width: 18px; height: 18px; padding: 0; border-radius: 50%;
     border: 1.5px solid rgba(255,255,255,.35); background: var(--c);
@@ -215,6 +215,7 @@
     }
     .panel .keys { display: none; }
     .panel .panel-head { flex-basis: 100%; }
+    .panel .group + .group { margin-top: 0; }  /* row layout: no block stagger */
     #srcPanel { bottom: 74px; }
     #appPanel { bottom: calc(74px + 40vh); }
   }
@@ -239,16 +240,18 @@
     <span id="meta"></span>
   </div>
   <select id="sec" hidden title="jump to a section"></select>
-  <span class="group">Paste text
+  <div class="group">
+    <div class="gt">Paste text</div>
     <textarea id="ta" placeholder="Paste any text here, then Load."></textarea>
     <button id="load">Load</button>
-  </span>
+  </div>
   <span class="keys"><kbd>space</kbd> play · <kbd>↑↓</kbd> speed · <kbd>←→</kbd> jump · <kbd>R</kbd> restart · <kbd>F</kbd> fullscreen · <kbd>O</kbd> open</span>
 </div>
 
 <div class="panel" id="appPanel">
   <div class="panel-head"><h2>Appearance</h2><button type="button" class="panel-reset" title="reset position (double-click does too)">⌂</button></div>
-  <span class="group">Text
+  <div class="group">
+    <div class="gt">Text</div>
     <label><span>font</span>
       <select id="font">
         <option value="'Cascadia Mono', Consolas, 'Courier New', monospace" selected>Cascadia Mono</option>
@@ -260,15 +263,22 @@
       </select>
     </label>
     <label><span>size</span> <input type="number" id="fsize" min="6" max="72" step="1" value="32"> pt</label>
-  </span>
-  <span class="group">Accent
-    <span class="chips" id="wchips" title="accent presets"><span class="ct">presets</span><button type="button" data-c="#ffb347" style="--c:#ffb347" title="amber"></button><button type="button" data-c="#ffffff" style="--c:#ffffff" title="white"></button><button type="button" data-c="#7ee787" style="--c:#7ee787" title="green"></button><button type="button" data-c="#ff7a6e" style="--c:#ff7a6e" title="red"></button><button type="button" data-c="#79c0ff" style="--c:#79c0ff" title="blue"></button></span>
+  </div>
+  <div class="group">
+    <div class="gt">Accent presets</div>
+    <span class="chips" id="wchips" title="accent presets"><button type="button" data-c="#ffb347" style="--c:#ffb347" title="amber"></button><button type="button" data-c="#ffffff" style="--c:#ffffff" title="white"></button><button type="button" data-c="#7ee787" style="--c:#7ee787" title="green"></button><button type="button" data-c="#ff7a6e" style="--c:#ff7a6e" title="red"></button><button type="button" data-c="#79c0ff" style="--c:#79c0ff" title="blue"></button></span>
     <label><span>word</span><input class="hex" id="whex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="word colour, hex"></label>
-    <span class="chips" id="bchips" title="background presets"><span class="ct">presets</span><button type="button" data-c="#08090c" style="--c:#08090c" title="default"></button><button type="button" data-c="#000000" style="--c:#000000" title="black"></button><button type="button" data-c="#12100d" style="--c:#12100d" title="warm black"></button><button type="button" data-c="#0a0e18" style="--c:#0a0e18" title="navy"></button><button type="button" data-c="#14171c" style="--c:#14171c" title="grey"></button></span>
+  </div>
+  <div class="group">
+    <div class="gt">Background presets</div>
+    <span class="chips" id="bchips" title="background presets"><button type="button" data-c="#08090c" style="--c:#08090c" title="default"></button><button type="button" data-c="#000000" style="--c:#000000" title="black"></button><button type="button" data-c="#12100d" style="--c:#12100d" title="warm black"></button><button type="button" data-c="#0a0e18" style="--c:#0a0e18" title="navy"></button><button type="button" data-c="#14171c" style="--c:#14171c" title="grey"></button></span>
     <label><span>background</span><input class="hex" id="bhex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="background colour, hex"></label>
-    <span class="chips" id="gchips" title="guide presets"><span class="ct">presets</span><button type="button" data-c="#2a2e36" style="--c:#2a2e36" title="default"></button><button type="button" data-c="#4a4f58" style="--c:#4a4f58" title="grey"></button><button type="button" data-c="#3d2a2a" style="--c:#3d2a2a" title="dim red"></button><button type="button" data-c="#22303f" style="--c:#22303f" title="dim blue"></button><button type="button" data-c="#233328" style="--c:#233328" title="dim green"></button></span>
+  </div>
+  <div class="group">
+    <div class="gt">Guide presets</div>
+    <span class="chips" id="gchips" title="guide presets"><button type="button" data-c="#2a2e36" style="--c:#2a2e36" title="default"></button><button type="button" data-c="#4a4f58" style="--c:#4a4f58" title="grey"></button><button type="button" data-c="#3d2a2a" style="--c:#3d2a2a" title="dim red"></button><button type="button" data-c="#22303f" style="--c:#22303f" title="dim blue"></button><button type="button" data-c="#233328" style="--c:#233328" title="dim green"></button></span>
     <label><span>guide</span><input class="hex" id="ghex" type="text" size="7" maxlength="7" spellcheck="false" aria-label="guide colour, hex"></label>
-  </span>
+  </div>
   <div hidden><input type="color" class="color-state" id="wcol" value="#ffb347"><input type="color" class="color-state" id="bgcol" value="#08090c"><input type="color" class="color-state" id="gcol" value="#2a2e36"></div>
 </div>
 
