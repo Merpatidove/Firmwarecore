@@ -8,6 +8,7 @@ Import("env")
 here = Path(env["PROJECT_DIR"])
 core = here.parent.parent  # firmware/
 src = here / "src"
-for name in ("rsvp_core.c", "rsvp_core.h", "rsvp_stream.c", "rsvp_stream.h"):
+for name in ("rsvp_core.c", "rsvp_core.h", "rsvp_stream.c", "rsvp_stream.h",
+             "rsvp_file.c", "rsvp_file.h"):
     shutil.copy2(core / name, src / name)
-print("copy_core: rsvp_core + rsvp_stream -> src/")
+print("copy_core: rsvp_core + rsvp_stream + rsvp_file -> src/")

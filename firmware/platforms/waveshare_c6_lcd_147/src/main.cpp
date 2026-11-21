@@ -24,6 +24,8 @@
 //    rsvp_stream copies them into titles[] now.
 // 9. SD-read-on-device path UNVERIFIED: compiled + host-tested only, no
 //    board/SD attached yet. Pending: mount, scan, menu, load, SPI arb.
+// 10. SD books STREAM via rsvp_file (16KB window + skip map): book size =
+//    card size, no 192KB cap. Serial path unchanged (whole-stream rs_feed).
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
@@ -32,6 +34,7 @@
 #include "rsvp_core.h"
 #include "rsvp_render.h"
 #include "rsvp_stream.h"
+#include "rsvp_file.h"
 
 static Arduino_DataBus *bus = new Arduino_HWSPI(
     BOARD_PIN_DC, BOARD_PIN_CS, BOARD_PIN_SCK, BOARD_PIN_MOSI);
@@ -48,7 +51,15 @@ static const rsvp_render_cfg RENDER_CFG = {
 static char buf[BOARD_BUF_SIZE];
 static rsvp_section sections[BOARD_MAX_SECTIONS];
 static char titles[BOARD_MAX_SECTIONS][RSVP_STREAM_TITLE_MAX];
-static rsvp_stream stream; /* shared by serial + SD paths */
+static rsvp_stream stream; /* serial ingest */
+
+/* SD streaming state (deviation 10): 16KB window + skip-map reader */
+static char sd_win[BOARD_SD_WIN_SIZE];
+static rsvp_section sd_sections[BOARD_MAX_SECTIONS];
+static char sd_titles[BOARD_MAX_SECTIONS][RSVP_STREAM_TITLE_MAX];
+static rf_reader rd;
+static File book;            /* held open across playback refills */
+static bool sd_book = false; /* current playback source: false = serial */
 
 static rsvp r;
 static rsvp_state_blob saved;
@@ -155,36 +166,71 @@ static void stream_reset()
     rs_init(&stream, buf, sizeof(buf), sections, BOARD_MAX_SECTIONS, titles);
 }
 
-static void begin_playback()
+/* ---- SD streaming (deviation 10) ----------------------------------- */
+
+static bool sd_read_at(void *ud, uint32_t off, char *dst, uint32_t len,
+                       uint32_t *got)
 {
-    rsvp_init(&r, buf, stream.buf_len, sections, stream.n_sections);
-    rsvp_load(&r, &saved, &theme_idx);
-    if (stream.theme_req >= 0 && stream.theme_req < RSVP_THEME_PRESETS)
-        theme_idx = (uint8_t)stream.theme_req;
-    if (stream.truncated)
-        Serial.println("[rsvp] file truncated to buffer");
-    Serial.printf("[rsvp] len=%u sections=%u wpm=%u\n",
-                  (unsigned)stream.buf_len, stream.n_sections, rsvp_wpm(&r));
-    playing = true;
-    ui = UI_PLAY;
+    File *fp = (File *)ud;
+    if (!*fp)
+        return false;
+    /* one seek per request; read may return less only at EOF */
+    if (!fp->seek(off))
+        return false;
+    int n = fp->read((uint8_t *)dst, len);
+    if (n < 0)
+        return false;
+    *got = (uint32_t)n;
+    return true;
 }
 
-static bool sd_load_file(const char *name)
+/* rf_scan walks the whole file sequentially through the real parser —
+ * takes seconds on big books; the caller shows "loading..." first. */
+static bool sd_open_book(const char *name)
 {
-    stream_reset();
-    File f = SD.open(name);
-    if (!f)
+    book.close();
+    book = SD.open(name);
+    if (!book)
         return false;
-    uint8_t tmp[256];
-    int got;
-    while ((got = f.read(tmp, sizeof(tmp))) > 0)
-        for (int i = 0; i < got; i++)
-            rs_feed(&stream, (char)tmp[i]);
-    f.close();
-    /* file without trailing E still plays (writer bug tolerance) */
-    if (!stream.end_seen && stream.buf_len > 0)
-        stream.end_seen = true;
-    return stream.buf_len > 0;
+    rf_io io = {&book, sd_read_at};
+    rf_init(&rd, &io, sd_win, sizeof(sd_win), sd_sections,
+            BOARD_MAX_SECTIONS, sd_titles);
+    if (!rf_scan(&rd)) {
+        book.close();
+        return false;
+    }
+    if (!rf_prime(&rd, 0)) {
+        book.close();
+        return false;
+    }
+    return true;
+}
+
+static void begin_playback()
+{
+    if (sd_book) {
+        /* resume: translate saved byte_off (logical) through the window */
+        rsvp_init(&r, sd_win, rd.win_len, sd_sections, rd.n_sections);
+        r.off = rd.pos - rd.win_start;
+    } else {
+        rsvp_init(&r, buf, stream.buf_len, sections, stream.n_sections);
+        rsvp_load(&r, &saved, &theme_idx);
+    }
+    if (sd_book ? rd.theme_req >= 0 : stream.theme_req >= 0) {
+        int t = sd_book ? rd.theme_req : stream.theme_req;
+        if (t >= 0 && t < RSVP_THEME_PRESETS)
+            theme_idx = (uint8_t)t;
+    }
+    if (!sd_book && stream.truncated)
+        Serial.println("[rsvp] file truncated to buffer");
+    Serial.printf("[rsvp] %s len=%u sections=%u wpm=%u\n",
+                  sd_book ? "sd" : "serial",
+                  sd_book ? (unsigned)rd.stream_len
+                          : (unsigned)stream.buf_len,
+                  sd_book ? rd.n_sections : stream.n_sections,
+                  rsvp_wpm(&r));
+    playing = true;
+    ui = UI_PLAY;
 }
 
 /* ---- button: falling edge + debounce, classify on release (dev 7) --- */
@@ -267,6 +313,8 @@ void loop()
             break;
         }
         if (ev == BTN_LONG) { /* back to menu: rescan, keep list fresh */
+            sd_book = false;
+            book.close();
             sd_ok = sd_mount() && sd_scan();
             if (sd_ok) {
                 menu_sel = 0;
@@ -281,6 +329,8 @@ void loop()
 
         static uint32_t next_at = 0;
         if (playing && (int32_t)(millis() - next_at) >= 0) {
+            if (sd_book)
+                rf_attach(&rd, &r); /* refill window if near its edge */
             const rsvp_view v = rsvp_frame(&r);
             if (!v.text || v.len == 0) {
                 playing = false; /* end of stream: park */
@@ -291,7 +341,12 @@ void loop()
                                rsvp_wpm(&r));
             next_at = millis() + v.ms;
             rsvp_next(&r);
-            rsvp_save(&r, theme_idx, &saved);
+            if (sd_book) {
+                rf_sync(&rd, &r);  /* window offset -> logical pos */
+                saved.byte_off = rd.pos;
+            } else {
+                rsvp_save(&r, theme_idx, &saved);
+            }
             // TODO(board): debounce-write `saved` into NVS every ~5s/pause
         }
         break;
@@ -303,9 +358,11 @@ void loop()
             menu_draw();
         } else if (ev == BTN_LONG && n_files > 0) {
             draw_centered("loading...", BOARD_STATUS_RGB565);
-            if (sd_load_file(files[menu_sel]))
+            sd_book = true;
+            if (sd_open_book(files[menu_sel]))
                 begin_playback();
             else {
+                sd_book = false;
                 menu_error("load failed");
                 delay(800);
                 menu_draw();

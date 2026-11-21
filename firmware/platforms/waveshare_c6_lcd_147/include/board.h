@@ -43,6 +43,7 @@
 #define BOARD_PIN_SD_MISO   5
 #define BOARD_SD_FILE_MAX   50    /* max .rsvp entries in the menu */
 #define BOARD_SD_NAME_MAX   56    /* max basename length (incl NUL) */
+#define BOARD_SD_WIN_SIZE   (16 * 1024) /* streaming window (rsvp_file) */
 
 /* ---- Single-button timing (BOOT btn; active LOW, INPUT_PULLUP) ---- */
 #define BOARD_BTN_SHORT_MS   400   /* < this = short press */
